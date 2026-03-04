@@ -1,0 +1,4 @@
+pandas
+mlxtend
+supabase
+python-dotenv
