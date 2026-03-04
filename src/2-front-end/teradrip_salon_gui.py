@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import pandas as pd
-from teradrip_ml import SalonETL 
+# import pandas as pd
+# from teradrip_ml import data_etl 
 
 # Branding Colors
 COLOR_TIFFANY = "#AFD5CA"
@@ -15,7 +15,7 @@ class TeraDripPipelineApp:
         self.root.geometry("800x600")
         self.root.configure(bg=COLOR_TIFFANY)
         
-        self.etl = SalonETL()
+        #self.etl = date_etl()
         self.setup_styles()
         self.create_widgets()
 
