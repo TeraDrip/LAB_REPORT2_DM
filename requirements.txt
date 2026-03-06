@@ -1,0 +1,6 @@
+flask
+flask-cors
+pandas
+psycopg[binary]
+python-dotenv
+supabase
