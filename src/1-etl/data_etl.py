@@ -1,15 +1,18 @@
 import argparse
+import json
 import os
 import re
 import time
 import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import psycopg
-from dotenv import load_dotenv
-from supabase import Client, create_client
+from psycopg.errors import ConnectionTimeout
 
 
 def sanitize_identifier(raw_name: str, fallback: str = "column") -> str:
@@ -22,27 +25,61 @@ def sanitize_identifier(raw_name: str, fallback: str = "column") -> str:
     return value
 
 
+def load_env_file(env_path: Path, override: bool = False) -> None:
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
 class CSVToSupabaseETL:
     def __init__(self, input_path: Path):
         self.project_root = Path(__file__).resolve().parent.parent.parent
         self.input_path = input_path.resolve()
         self.env_path = self.project_root / ".env"
-        load_dotenv(dotenv_path=self.env_path)
+        load_env_file(self.env_path, override=False)
 
-        supabase_url = os.environ.get("SUPABASE_URL")
-        supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
-        if not supabase_url or not supabase_key:
-            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY) must be set in .env")
-        self.supabase: Client = create_client(supabase_url, supabase_key)
+        self.supabase_url = os.environ.get("SUPABASE_URL")
+        self.supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 
-        self.db_url = self.resolve_db_url(supabase_url)
-        if not self.db_url:
-            print(
-                "[WARN] No DB URL found. Table auto-creation is disabled. "
-                "Set SUPABASE_DB_URL or SUPABASE_DB_PASSWORD in .env to enable CREATE TABLE."
+        self.db_connect_timeout_s = int(os.environ.get("SUPABASE_DB_CONNECT_TIMEOUT", "12"))
+        self.http_timeout_s = int(os.environ.get("SUPABASE_HTTP_TIMEOUT", "30"))
+        self.db_port = int(os.environ.get("SUPABASE_DB_PORT", "5432"))
+        self.db_pooler_port = int(os.environ.get("SUPABASE_DB_POOLER_PORT", "6543"))
+
+        self.db_url = self.resolve_db_url()
+        self.use_postgres = bool(self.db_url)
+
+        if not self.use_postgres and (not self.supabase_url or not self.supabase_key):
+            raise ValueError(
+                "Missing credentials. Set SUPABASE_DB_URL (recommended) or set SUPABASE_URL plus "
+                "SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY) in .env."
             )
 
-    def resolve_db_url(self, supabase_url: str) -> str | None:
+        if not self.use_postgres:
+            print(
+                "[WARN] No DB URL found. Table auto-creation is disabled. "
+                "Set SUPABASE_DB_URL or SUPABASE_DB_PASSWORD (plus SUPABASE_URL) in .env to enable CREATE TABLE."
+            )
+
+    def resolve_db_url(self) -> str | None:
         explicit_db_url = (
             os.environ.get("SUPABASE_DB_URL")
             or os.environ.get("DATABASE_URL")
@@ -61,11 +98,15 @@ class CSVToSupabaseETL:
         if not db_password:
             return None
 
+        if not self.supabase_url:
+            print("[WARN] SUPABASE_DB_PASSWORD is set but SUPABASE_URL is missing; cannot build a DB URL.")
+            return None
+
         # Build default Supabase Postgres URL from project ref in SUPABASE_URL.
         # Example host: https://<project_ref>.supabase.co
         project_ref = ""
         try:
-            host = supabase_url.replace("https://", "").replace("http://", "")
+            host = self.supabase_url.replace("https://", "").replace("http://", "")
             project_ref = host.split(".")[0]
         except Exception:
             project_ref = ""
@@ -73,7 +114,56 @@ class CSVToSupabaseETL:
         if not project_ref:
             return None
 
-        return f"postgresql://postgres:{db_password}@db.{project_ref}.supabase.co:5432/postgres"
+        encoded_password = quote(db_password, safe="")
+        return (
+            f"postgresql://postgres:{encoded_password}"
+            f"@db.{project_ref}.supabase.co:{self.db_port}/postgres?sslmode=require"
+        )
+
+    def with_port(self, postgres_url: str, port: int) -> str:
+        if not (postgres_url.startswith("postgresql://") or postgres_url.startswith("postgres://")):
+            return postgres_url
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(postgres_url)
+        hostname = parts.hostname or ""
+        if not hostname:
+            return postgres_url
+
+        userinfo = ""
+        if parts.username:
+            userinfo = parts.username
+            if parts.password is not None:
+                userinfo += f":{parts.password}"
+            userinfo += "@"
+
+        netloc = f"{userinfo}{hostname}:{int(port)}"
+        if parts.port == int(port) and parts.netloc:
+            return postgres_url
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+    def connect_postgres(self):
+        if not self.db_url:
+            raise ValueError("DB URL is not configured")
+
+        try:
+            return psycopg.connect(
+                self.db_url,
+                autocommit=True,
+                connect_timeout=self.db_connect_timeout_s,
+            )
+        except ConnectionTimeout:
+            # Common on some networks: outbound 5432 is blocked but 6543 (pooler) works.
+            alt_url = self.with_port(self.db_url, self.db_pooler_port)
+            if alt_url == self.db_url:
+                raise
+            conn = psycopg.connect(
+                alt_url,
+                autocommit=True,
+                connect_timeout=self.db_connect_timeout_s,
+            )
+            self.db_url = alt_url
+            return conn
 
     def is_likely_datetime_series(self, series: pd.Series) -> bool:
         non_null = series.dropna()
@@ -195,7 +285,7 @@ class CSVToSupabaseETL:
         if not self.db_url:
             return
         sql = self.create_table_sql(table_name, column_types)
-        with psycopg.connect(self.db_url, autocommit=True) as conn:
+        with self.connect_postgres() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql)
 
@@ -213,14 +303,80 @@ class CSVToSupabaseETL:
             records.append(normalized)
         return records
 
-    def load_to_supabase(self, table_name: str, df: pd.DataFrame, batch_size: int = 500) -> None:
+    def normalize_db_value(self, value):
+        if pd.isna(value):
+            return None
+
+        if isinstance(value, pd.Timestamp):
+            return value.to_pydatetime()
+
+        # Convert numpy scalars to Python primitives when possible.
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                pass
+
+        return value
+
+    def load_to_postgres(self, table_name: str, df: pd.DataFrame, batch_size: int = 500) -> None:
+        if not self.db_url:
+            raise ValueError("DB URL is not configured")
+
+        if df.empty:
+            return
+
+        columns = list(df.columns)
+        if not columns:
+            return
+
+        column_list = ", ".join([f"\"{col}\"" for col in columns])
+        placeholders = ", ".join(["%s"] * len(columns))
+        sql = f"insert into public.\"{table_name}\" ({column_list}) values ({placeholders})"
+
+        with self.connect_postgres() as conn:
+            with conn.cursor() as cur:
+                for start in range(0, len(df), batch_size):
+                    chunk = df.iloc[start : start + batch_size]
+                    rows = []
+                    for _, row in chunk.iterrows():
+                        rows.append(tuple(self.normalize_db_value(row[col]) for col in columns))
+                    if rows:
+                        cur.executemany(sql, rows)
+
+    def http_post_json(self, url: str, headers: Dict[str, str], payload) -> Tuple[int, str]:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=self.http_timeout_s) as resp:
+                return resp.status, resp.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", errors="replace")
+        except URLError as exc:
+            raise RuntimeError(f"HTTP request failed: {exc}") from exc
+
+    def load_to_supabase_rest(self, table_name: str, df: pd.DataFrame, batch_size: int = 500) -> None:
+        if not self.supabase_url or not self.supabase_key:
+            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY) must be set in .env")
+
         records = self.records_from_dataframe(df)
         if not records:
             return
 
+        url = f"{self.supabase_url.rstrip('/')}/rest/v1/{table_name}"
+        headers = {
+            "apikey": self.supabase_key,
+            "Authorization": f"Bearer {self.supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        }
+
         for start in range(0, len(records), batch_size):
             chunk = records[start : start + batch_size]
-            self.supabase.table(table_name).insert(chunk).execute()
+            status, body = self.http_post_json(url=url, headers=headers, payload=chunk)
+            if status in (200, 201, 204):
+                continue
+            raise RuntimeError(body or f"Supabase REST insert failed with HTTP {status}")
 
     def process_file(self, csv_path: Path) -> None:
         table_name = sanitize_identifier(csv_path.stem, "table")
@@ -242,34 +398,43 @@ class CSVToSupabaseETL:
             column_types[column] = sql_type
         transformed_df = pd.DataFrame(transformed)
 
-        if self.db_url:
+        if self.use_postgres:
             try:
                 self.create_table(table_name, column_types)
             except Exception as exc:
                 print(f"[WARN] CREATE TABLE failed for {table_name}: {exc}")
-                print("[WARN] Continuing without table creation for this run.")
-                self.db_url = None
-        if not self.db_url:
-            print(f"[WARN] Skipping CREATE TABLE for {table_name} (DB URL not configured).")
+                print(
+                    "[HINT] Verify SUPABASE_DB_URL (recommended) or SUPABASE_DB_PASSWORD. "
+                    "Some networks block outbound port 5432."
+                )
+                raise
+
+            self.load_to_postgres(table_name, transformed_df)
+            print(f"[OK] {csv_path.name} -> public.{table_name} ({len(transformed_df)} rows)")
+            return
+
+        print(f"[WARN] Skipping CREATE TABLE for {table_name} (DB URL not configured).")
 
         max_attempts = 4
         for attempt in range(1, max_attempts + 1):
             try:
-                self.load_to_supabase(table_name, transformed_df)
+                self.load_to_supabase_rest(table_name, transformed_df)
                 print(f"[OK] {csv_path.name} -> public.{table_name} ({len(transformed_df)} rows)")
                 break
             except Exception as exc:
                 is_schema_cache_issue = "PGRST205" in str(exc)
                 if is_schema_cache_issue and attempt < max_attempts:
-                    print(f"[WARN] Supabase schema cache not ready for {table_name}. Retrying ({attempt}/{max_attempts})...")
+                    print(
+                        f"[WARN] Supabase schema cache not ready for {table_name}. "
+                        f"Retrying ({attempt}/{max_attempts})..."
+                    )
                     time.sleep(2)
                     continue
                 print(f"[ERROR] Load failed for {csv_path.name}: {exc}")
-                if not self.db_url:
-                    print(
-                        "[HINT] Table may not exist yet. Add SUPABASE_DB_URL or SUPABASE_DB_PASSWORD in .env "
-                        "to enable automatic table creation."
-                    )
+                print(
+                    "[HINT] Table may not exist yet. Set SUPABASE_DB_URL (recommended) to enable automatic table "
+                    "creation, or create the table manually in Supabase before running REST mode."
+                )
                 break
 
     def run(self) -> None:

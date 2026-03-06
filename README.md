@@ -4,62 +4,50 @@ This repo contains an ETL script that:
 
 - Reads all `.csv` files from `src/1-etl/csv-files/` (by default)
 - Cleans and transforms data (auto dtype inference per column)
-- Creates matching tables in Supabase Postgres (optional, requires DB credentials)
+- Creates matching tables in Supabase Postgres (recommended, requires DB credentials)
 - Uploads the cleaned rows to Supabase
 
 ## 1) Prerequisites
 
 - Windows
-- Python interpreter (either):
-  - Project virtualenv at `.venv` (recommended), or
-  - Anaconda Python
+- Python 3.10+ (recommended)
 
-Dependencies are listed in `lib.txt`.
+Dependencies are listed in `requirements.txt` (and mirrored in `lib.txt`).
 
 ## 2) Install Dependencies
-
-### Option A: Use `.venv` (recommended)
 
 From repo root:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r .\lib.txt
+.\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ```
 
-### Option B: Use Anaconda Python
-
-From repo root:
-
-```powershell
-C:/Users/Jed/anaconda3/python.exe -m pip install -r .\lib.txt
-```
-
-Important: packages must be installed into the same interpreter you use to run the script.
+Note: You don't need to activate the venv (avoids PowerShell execution-policy issues).
 
 ## 3) Configure `.env`
 
 Create/update `.env` in the repo root with:
 
 ```bash
-SUPABASE_URL="https://<project_ref>.supabase.co"
+# Recommended (best): full Postgres connection string from Supabase Dashboard
+SUPABASE_DB_URL="postgresql://postgres:<password>@db.<project_ref>.supabase.co:5432/postgres?sslmode=require"
 
-# Preferred for ETL (bypasses RLS issues). If you only have SUPABASE_KEY, keep using it.
+# Alternative: build DB URL automatically (requires SUPABASE_URL too)
+SUPABASE_URL="https://<project_ref>.supabase.co"
+SUPABASE_DB_PASSWORD=""
+
+# REST fallback (only used if no DB URL/password is set). Tables must already exist.
 SUPABASE_SERVICE_ROLE_KEY=""
 SUPABASE_KEY=""
-
-# For automatic CREATE TABLE in Supabase Postgres:
-# Provide either the DB password (recommended) OR a full Postgres connection string.
-SUPABASE_DB_PASSWORD=""
-SUPABASE_DB_URL=""
 ```
 
 Notes:
 
 - Do not set `SUPABASE_DB_URL` to your HTTPS project URL. A valid DB URL must start with `postgres://` or `postgresql://`.
-- If you set `SUPABASE_DB_PASSWORD`, the script auto-builds:
-  - `postgresql://postgres:<password>@db.<project_ref>.supabase.co:5432/postgres`
+- If you set `SUPABASE_DB_PASSWORD`, the script auto-builds a DB URL using your `SUPABASE_URL`.
+- If you get a connection timeout on port `5432`, use Supabase's connection pooler port `6543` (or set `SUPABASE_DB_PORT=6543`).
+- `.env` is ignored by git via `.gitignore`.
 
 ## 4) Put CSV Files Here
 
@@ -71,23 +59,14 @@ The script scans that directory recursively for `*.csv` by default.
 
 ## 5) Run The ETL
 
-### Run with `.venv`
-
 ```powershell
-.\.venv\Scripts\Activate.ps1
-python .\src\1-etl\data_etl.py
-```
-
-### Run with Anaconda
-
-```powershell
-C:/Users/Jed/anaconda3/python.exe .\src\1-etl\data_etl.py
+.\.venv\Scripts\python.exe .\src\1-etl\data_etl.py
 ```
 
 Optional: override the input location (file or directory):
 
 ```powershell
-python .\src\1-etl\data_etl.py --input-path "path\to\csv-or-folder"
+.\.venv\Scripts\python.exe .\src\1-etl\data_etl.py --input-path "path\to\csv-or-folder"
 ```
 
 ## What The Script Does
@@ -106,13 +85,14 @@ File: `src/1-etl/data_etl.py`
   - Columns with `id` in the column name are forced to `varchar` (string) for key compatibility
 - Loading:
   - inserts in batches
-  - retries briefly if Supabase schema cache is not ready right after table creation
+  - preferred: direct Postgres insert (requires `SUPABASE_DB_URL` or `SUPABASE_DB_PASSWORD`)
+  - fallback: Supabase REST insert (table must already exist; may retry briefly on `PGRST205`)
 
 ## Troubleshooting
 
 - `ValueError` about DB URL:
   - Add `SUPABASE_DB_PASSWORD` or a valid `SUPABASE_DB_URL` (postgres DSN) to `.env`.
 - Insert error like `PGRST205` (schema cache):
-  - The script retries automatically; re-run if needed.
+  - You are running in REST fallback mode (no DB URL). Prefer setting `SUPABASE_DB_URL` so the ETL creates tables and inserts directly.
 - Insert fails saying the table does not exist:
-  - You are likely running without DB credentials (table creation disabled), or RLS is blocking inserts. Use `SUPABASE_SERVICE_ROLE_KEY` and set DB credentials.
+  - Prefer setting `SUPABASE_DB_URL` so the ETL can create the table automatically.
