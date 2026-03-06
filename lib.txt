@@ -1,7 +1,2 @@
 pandas
-mlxtend
-supabase
-python-dotenv
 psycopg[binary]
-flask
-flask-cors

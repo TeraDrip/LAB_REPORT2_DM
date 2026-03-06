@@ -15,6 +15,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import pandas as pd
+import psycopg
 
 # Add paths for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -138,6 +139,61 @@ def infer_sql_type_and_transform(column_name: str, series: pd.Series) -> Tuple[s
     return "text", series.astype("string")
 
 
+def resolve_db_url() -> str | None:
+    """Resolve PostgreSQL database URL for direct connection."""
+    # Check for explicit DB URL
+    explicit_db_url = (
+        os.environ.get("SUPABASE_DB_URL")
+        or os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+    )
+    if explicit_db_url:
+        if explicit_db_url.startswith("postgresql://") or explicit_db_url.startswith("postgres://"):
+            return explicit_db_url
+    
+    # Build from password and project ref
+    db_password = os.environ.get("SUPABASE_DB_PASSWORD")
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    if not db_password or not supabase_url:
+        return None
+    
+    try:
+        host = supabase_url.replace("https://", "").replace("http://", "")
+        project_ref = host.split(".")[0]
+        if project_ref:
+            return f"postgresql://postgres:{db_password}@db.{project_ref}.supabase.co:5432/postgres"
+    except Exception:
+        pass
+    return None
+
+
+def create_table_sql(table_name: str, column_types: Dict[str, str]) -> str:
+    """Generate CREATE TABLE SQL statement."""
+    column_defs = ", ".join([f'"{col}" {sql_type}' for col, sql_type in column_types.items()])
+    return f'CREATE TABLE IF NOT EXISTS public."{table_name}" ({column_defs});'
+
+
+def create_table(table_name: str, column_types: Dict[str, str]) -> bool:
+    """Create table in Supabase using direct PostgreSQL connection."""
+    db_url = resolve_db_url()
+    if not db_url:
+        print(f"[WARN] No DB URL available - table {table_name} won't be auto-created")
+        print("[HINT] Set SUPABASE_DB_PASSWORD in .env or create the table manually in Supabase")
+        return False
+    
+    try:
+        sql = create_table_sql(table_name, column_types)
+        print(f"[DEBUG] Creating table: {table_name}")
+        with psycopg.connect(db_url, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+        print(f"[SUCCESS] Table {table_name} created/verified")
+        return True
+    except Exception as e:
+        print(f"[WARN] CREATE TABLE failed: {e}")
+        return False
+
+
 def get_supabase():
     """Get Supabase client."""
     from supabase import create_client
@@ -242,19 +298,38 @@ def upload_csv():
         table_name = sanitize_identifier(Path(file.filename).stem, "table")
         
         try:
+            # Create table first (requires SUPABASE_DB_PASSWORD or SUPABASE_DB_URL in .env)
+            table_created = create_table(table_name, column_types)
+            if table_created:
+                pipeline_status["message"] = f"Created table {table_name}, loading data..."
+            
             supabase = get_supabase()
             records = records_from_dataframe(transformed_df)
             
-            # Batch insert
+            # Batch insert with retry for schema cache
             batch_size = 500
-            for start in range(0, len(records), batch_size):
-                chunk = records[start:start + batch_size]
-                supabase.table(table_name).insert(chunk).execute()
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    for start in range(0, len(records), batch_size):
+                        chunk = records[start:start + batch_size]
+                        supabase.table(table_name).insert(chunk).execute()
+                    break  # Success
+                except Exception as insert_err:
+                    if "PGRST205" in str(insert_err) and attempt < max_attempts:
+                        # Schema cache not ready, wait and retry
+                        time.sleep(2)
+                        continue
+                    raise insert_err
             
             pipeline_status["message"] = f"Loaded {len(records)} records to {table_name}"
+            print(f"[SUCCESS] Loaded {len(records)} records to {table_name}")
         except Exception as e:
-            # If Supabase fails, continue with local processing
-            pipeline_status["message"] = f"Supabase unavailable, processed locally: {str(e)[:50]}"
+            # If Supabase fails, log the error
+            error_msg = str(e)
+            print(f"[ERROR] Supabase load failed: {error_msg}")
+            pipeline_status["message"] = f"Supabase error: {error_msg[:100]}"
+            pipeline_status["error"] = error_msg
         
         # Step 4: WAREHOUSE
         pipeline_status["step"] = 4
@@ -424,7 +499,9 @@ if __name__ == "__main__":
     print("=" * 50)
     print(f"📁 Project Root: {PROJECT_ROOT}")
     print(f"🌐 Frontend: {app.static_folder}")
-    print(f"💾 Supabase: {'✓ Configured' if os.environ.get('SUPABASE_URL') else '✗ Not configured'}")
+    print(f"💾 Supabase API: {'✓ Configured' if os.environ.get('SUPABASE_URL') else '✗ Not configured'}")
+    db_url = resolve_db_url()
+    print(f"🗄️  DB Direct: {'✓ Configured' if db_url else '✗ Not configured (table auto-creation disabled)'}")
     print("=" * 50)
     print("🔗 Open http://localhost:5000 in your browser")
     print("=" * 50 + "\n")
