@@ -181,10 +181,10 @@ class CSVToSupabaseETL:
         return token_ratio >= 0.6
 
     def is_identifier_column(self, column_name: str) -> bool:
-        normalized = column_name.strip().lower()
-        if "id" not in normalized:
-            return False
-        return True
+        # Only treat "id" as an identifier token, not a substring.
+        # Example: "wide_tooth_comb" contains letters "id" but is NOT an ID column.
+        normalized = sanitize_identifier(column_name, "column")
+        return re.search(r"(^|_)id($|_)", normalized) is not None
 
     def discover_csv_files(self) -> List[Path]:
         if self.input_path.is_file() and self.input_path.suffix.lower() == ".csv":
@@ -249,6 +249,12 @@ class CSVToSupabaseETL:
         numeric = pd.to_numeric(series, errors="coerce")
         numeric_match = numeric.notna().sum() / len(non_null)
         if numeric_match == 1.0:
+            # Treat 0/1 numeric columns as boolean (common after CSV reads with NaNs -> floats).
+            unique_vals = set(numeric.dropna().unique().tolist())
+            if unique_vals.issubset({0, 1, 0.0, 1.0}):
+                transformed = numeric.map(lambda v: None if pd.isna(v) else bool(int(v)))
+                return "boolean", transformed
+
             int_like = ((numeric.dropna() % 1) == 0).all()
             if int_like:
                 return "bigint", numeric.astype("Int64")
@@ -280,6 +286,88 @@ class CSVToSupabaseETL:
     def create_table_sql(self, table_name: str, column_types: Dict[str, str]) -> str:
         column_defs = ", ".join([f"\"{col}\" {sql_type}" for col, sql_type in column_types.items()])
         return f"create table if not exists public.\"{table_name}\" ({column_defs});"
+
+    def fetch_existing_columns(self, table_name: str) -> Dict[str, str]:
+        if not self.db_url:
+            return {}
+        sql = """
+            select column_name, data_type
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = %s
+        """
+        with self.connect_postgres() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (table_name,))
+                rows = cur.fetchall()
+        return {name: dtype for name, dtype in rows}
+
+    def ensure_table_schema(self, table_name: str, column_types: Dict[str, str]) -> None:
+        if not self.db_url:
+            return
+
+        existing = self.fetch_existing_columns(table_name)
+        missing = [col for col in column_types.keys() if col not in existing]
+        for col in missing:
+            sql_type = column_types[col]
+            alter = f'alter table public."{table_name}" add column if not exists "{col}" {sql_type};'
+            with self.connect_postgres() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(alter)
+
+        self.migrate_boolean_columns(table_name, column_types=column_types)
+
+    def migrate_boolean_columns(self, table_name: str, column_types: Dict[str, str]) -> None:
+        existing = self.fetch_existing_columns(table_name)
+        bool_cols = [col for col, typ in column_types.items() if typ == "boolean"]
+        if not bool_cols:
+            return
+
+        truthy = ("1", "1.0", "true", "t", "yes", "y")
+        falsy = ("0", "0.0", "false", "f", "no", "n")
+
+        for col in bool_cols:
+            current_type = existing.get(col)
+            if not current_type or current_type == "boolean":
+                continue
+
+            if current_type not in ("character varying", "text", "bigint", "integer", "numeric", "double precision"):
+                continue
+
+            validate = f"""
+                select count(*)
+                from public."{table_name}"
+                where "{col}" is not null
+                  and trim("{col}"::text) <> ''
+                  and lower(trim("{col}"::text)) not in %s
+            """
+            allowed = truthy + falsy
+            with self.connect_postgres() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(validate, (allowed,))
+                    bad_count = int(cur.fetchone()[0])
+
+            if bad_count > 0:
+                print(
+                    f"[WARN] Column public.{table_name}.{col} is {current_type} but has {bad_count} "
+                    "non-boolean values; skipping auto-migration."
+                )
+                continue
+
+            using_expr = (
+                f"case "
+                f"when \"{col}\" is null then null "
+                f"when trim(\"{col}\"::text) = '' then null "
+                f"when lower(trim(\"{col}\"::text)) in {truthy!r} then true "
+                f"when lower(trim(\"{col}\"::text)) in {falsy!r} then false "
+                f"else null end"
+            )
+            alter = f'alter table public."{table_name}" alter column "{col}" type boolean using ({using_expr});'
+            with self.connect_postgres() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(alter)
+
+            print(f"[OK] Migrated public.{table_name}.{col} to boolean")
 
     def create_table(self, table_name: str, column_types: Dict[str, str]) -> None:
         if not self.db_url:
@@ -401,6 +489,7 @@ class CSVToSupabaseETL:
         if self.use_postgres:
             try:
                 self.create_table(table_name, column_types)
+                self.ensure_table_schema(table_name, column_types)
             except Exception as exc:
                 print(f"[WARN] CREATE TABLE failed for {table_name}: {exc}")
                 print(
