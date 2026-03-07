@@ -715,23 +715,28 @@
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         /* Layout */
-        .upload-timer-row {
+        .dashboard-card-layout {
             display: grid;
-            grid-template-columns: 2.5fr 1fr;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-areas:
+                'upload ml'
+                'time ml';
             gap: 20px;
             align-items: stretch;
         }
 
-        .ml-recs-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            align-items: stretch;
+        .upload-card { grid-area: upload; }
+        .time-card { grid-area: time; }
+        .ml-output-card {
+            grid-area: ml;
+            display: flex;
+            flex-direction: column;
         }
 
-        .upload-timer-row > .card,
-        .ml-recs-row > .card {
-            height: 100%;
+        .ml-output-card .console {
+            flex: 1;
+            min-height: 280px;
+            max-height: none;
         }
 
         .upload-action-row {
@@ -744,7 +749,9 @@
 
         /* Responsive */
         @media (max-width: 1100px) {
-            .upload-timer-row { grid-template-columns: 2fr 1fr; }
+            .dashboard-card-layout {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
 
         @media (max-width: 860px) {
@@ -753,8 +760,13 @@
             .logo-icon { width: 40px; height: 40px; }
             .nav-link { padding: 8px 14px; font-size: 13px; }
             .main-content { padding: 20px; }
-            .upload-timer-row { grid-template-columns: 1fr; }
-            .ml-recs-row { grid-template-columns: 1fr; }
+            .dashboard-card-layout {
+                grid-template-columns: 1fr;
+                grid-template-areas:
+                    'upload'
+                    'time'
+                    'ml';
+            }
         }
 
         @media (max-width: 560px) {
@@ -779,6 +791,51 @@
             border: 1px solid var(--glass-border);
             border-radius: var(--border-radius-xs);
             background: rgba(255, 255, 255, 0.45);
+        }
+
+        .recommendation-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .recommendation-filter-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .recommendation-filter-icon {
+            width: 16px;
+            height: 16px;
+            color: #0f4a43;
+            flex-shrink: 0;
+        }
+
+        .recommendation-filter-icon path {
+            stroke: currentColor;
+            stroke-width: 2.2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            fill: none;
+        }
+
+        .recommendation-filter {
+            border: 1px solid var(--glass-border);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.75);
+            color: var(--text-primary);
+            padding: 8px 10px;
+            font-size: 13px;
+            font-weight: 600;
+            outline: none;
+            min-width: 220px;
         }
 
         .widget-title {
@@ -854,6 +911,7 @@
             </div>
             <div class="nav-links">
                 <span class="nav-link active" onclick="switchTab('dashboard')">Dashboard</span>
+                <span class="nav-link" onclick="switchTab('recommendation')">Recommendation</span>
                 <span class="nav-link" onclick="switchTab('analytics')">Analytics</span>
                 <span class="nav-link" onclick="switchTab('data')">Data</span>
             </div>
@@ -905,10 +963,10 @@
                     </div>
                 </div>
 
-                <!-- Timer + File Upload side by side -->
-                <div class="upload-timer-row">
-                    <!-- File Upload (75%) -->
-                    <div class="card">
+                <!-- Dashboard Cards Layout -->
+                <div class="dashboard-card-layout">
+                    <!-- File Upload Card -->
+                    <div class="card upload-card">
                         <div class="card-header">
                             <span class="card-title">File Upload (raw.csv)</span>
                         </div>
@@ -928,12 +986,11 @@
                         <div class="upload-action-row">
                             <button class="btn btn-primary" onclick="processPipeline()">🚀 Start ETL Pipeline</button>
                             <button class="btn btn-accent" onclick="runMLLogic()">✨ Generate Recommendations</button>
-                            <button id="clearFileWrapper" onclick="clearFile()" style="background: #fee2e2; color: #b91c1c; font-size: 12px; padding: 6px 12px; border-radius: 8px; font-weight: 700; border: none; cursor: pointer; white-space: nowrap;">✕ Clear</button>
                         </div>
                     </div>
 
-                    <!-- Processing Time Card (25%) -->
-                    <div class="card time-tracker">
+                    <!-- Processing Time Card -->
+                    <div class="card time-tracker time-card">
                         <div class="card-header">
                             <span class="card-title">Processing Time</span>
                         </div>
@@ -954,12 +1011,8 @@
                         </div>
                         <div id="uploadStatus" style="text-align: center; font-size: 11px;"></div>
                     </div>
-                </div>
-
-                <!-- ML Output + Recommendations -->
-                <div class="ml-recs-row">
                     <!-- ML Output Card -->
-                    <div class="card">
+                    <div class="card ml-output-card">
                         <div class="onboarding-header">
                             <span class="card-title">ML Output</span>
                             <span class="onboarding-percent" id="mlPercent">0%</span>
@@ -972,36 +1025,53 @@
                         </div>
                         <div class="console" id="console"></div>
                     </div>
-
-                    <!-- Recommendations -->
-                    <div class="card">
-                        <div class="card-title" style="margin-bottom: 15px;">📅 Recommendation Widgets</div>
-                        <div class="widget-group">
-                            <div class="widget-title">Top Bundles</div>
-                            <div class="recommendations-container" id="topBundlesContainer"></div>
-                        </div>
-                        <div class="widget-group">
-                            <div class="widget-title">Frequently Bought Together</div>
-                            <div class="recommendations-container" id="fbtContainer"></div>
-                        </div>
-                        <div class="widget-group">
-                            <div class="widget-title">Promo Recommendation Generator</div>
-                            <div class="recommendations-container" id="promoContainer"></div>
-                        </div>
-                        <div class="widget-group">
-                            <div class="widget-title">Cross-Sell Suggestions</div>
-                            <div id="crossSellContainer"></div>
-                        </div>
-                    </div>
                 </div>
 
 
             </div><!-- end dashboard-grid -->
             </div><!-- end tab-dashboard -->
 
+            <!-- Recommendation Tab -->
+            <div id="tab-recommendation" class="tab-panel" style="display:none;">
+                <div class="card">
+                    <div class="recommendation-header">
+                        <div class="card-title">📅 Recommendation Widgets</div>
+                        <label class="recommendation-filter-wrap" for="recommendationFilter">
+                            <svg class="recommendation-filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M3 5h18l-7 8v6l-4-3v-3z"></path>
+                            </svg>
+                            <span>Filter</span>
+                            <select id="recommendationFilter" class="recommendation-filter">
+                                <option value="all">All</option>
+                                <option value="top-bundles">Top Bundles</option>
+                                <option value="fbt">Frequently Bought Together</option>
+                                <option value="promo">Promo Recommendation</option>
+                                <option value="cross-sell">Cross-sell Suggestions</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="widget-group recommendation-section" data-filter="top-bundles">
+                        <div class="widget-title">Top Bundles</div>
+                        <div class="recommendations-container" id="topBundlesContainer"></div>
+                    </div>
+                    <div class="widget-group recommendation-section" data-filter="fbt">
+                        <div class="widget-title">Frequently Bought Together</div>
+                        <div class="recommendations-container" id="fbtContainer"></div>
+                    </div>
+                    <div class="widget-group recommendation-section" data-filter="promo">
+                        <div class="widget-title">Promo Recommendation Generator</div>
+                        <div class="recommendations-container" id="promoContainer"></div>
+                    </div>
+                    <div class="widget-group recommendation-section" data-filter="cross-sell">
+                        <div class="widget-title">Cross-Sell Suggestions</div>
+                        <div id="crossSellContainer"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Analytics Tab -->
             <div id="tab-analytics" class="tab-panel" style="display:none;">
-                <div class="card" style="padding: 24px; color: var(--text-muted);">
+                <div class="card" style="padding: 24px;">
                     <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">📈 Business Insights</div>
                     <div id="insightsContainer" style="font-size: 14px; line-height: 1.6;">Run your ETL + ML pipeline to populate insights.</div>
                     <div class="graph-grid">
@@ -1064,7 +1134,7 @@
         let currentTableName = null;
         let currentUploadTimestamp = null;
 
-        const tabTitles = { dashboard: 'Welcome to TeraDrip Salon', analytics: 'Analytics', data: 'Data Overview' };
+        const tabTitles = { dashboard: 'Welcome to TeraDrip Salon', recommendation: 'Recommendations', analytics: 'Analytics', data: 'Data Overview' };
 
         function switchTab(name) {
             document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
@@ -1074,11 +1144,24 @@
                 if (l.textContent.toLowerCase() === name) l.classList.add('active');
             });
             document.getElementById('pageTitle').textContent = tabTitles[name];
+
+            if (name === 'recommendation') {
+                const filterEl = document.getElementById('recommendationFilter');
+                applyRecommendationFilter(filterEl ? filterEl.value : 'all');
+            }
             
             // Fetch data stats when switching to data tab
             if (name === 'data') {
                 fetchDataStats();
             }
+        }
+
+        function applyRecommendationFilter(filterValue) {
+            const sections = document.querySelectorAll('#tab-recommendation .recommendation-section');
+            sections.forEach(section => {
+                const sectionKey = section.getAttribute('data-filter');
+                section.style.display = (filterValue === 'all' || sectionKey === filterValue) ? 'block' : 'none';
+            });
         }
 
         document.getElementById('csvFile').addEventListener('change', function(e) {
@@ -1516,6 +1599,14 @@
 
         // Check backend health on page load
         document.addEventListener('DOMContentLoaded', async () => {
+            const recommendationFilter = document.getElementById('recommendationFilter');
+            if (recommendationFilter) {
+                recommendationFilter.addEventListener('change', (e) => {
+                    applyRecommendationFilter(e.target.value);
+                });
+                applyRecommendationFilter(recommendationFilter.value);
+            }
+
             try {
                 const response = await fetch(`${API_BASE}/health`);
                 const health = await response.json();
