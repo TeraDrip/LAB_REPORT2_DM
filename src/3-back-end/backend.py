@@ -5,6 +5,7 @@ Integrates the ETL pipeline with the front-end interface.
 import os
 import sys
 import re
+import json
 import subprocess
 import warnings
 from pathlib import Path
@@ -28,6 +29,7 @@ sys.path.insert(0, str(ETL_DIR))
 sys.path.insert(0, str(ML_DIR))
 
 from dotenv import load_dotenv
+from teradrip_ml import TeraDripMBAEngine
 load_dotenv(dotenv_path=PROJECT_ROOT / ".env")
 
 # Initialize Flask app
@@ -44,6 +46,10 @@ pipeline_status = {
     "start_time": None,
     "end_time": None
 }
+
+# Tracks the most recent dataset table produced by /api/upload.
+latest_loaded_table: str | None = None
+latest_upload_time: str | None = None
 
 
 def sanitize_identifier(raw_name: str, fallback: str = "column") -> str:
@@ -215,6 +221,97 @@ def get_supabase():
     return create_client(url, key)
 
 
+def clear_table_rows(table_name: str) -> bool:
+    """Delete existing rows from a target table so each upload can drive fresh ML outputs."""
+    db_url = resolve_db_url()
+    if not db_url:
+        return False
+    try:
+        with psycopg.connect(db_url, autocommit=True, prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'DELETE FROM public."{table_name}";')
+        print(f"[INFO] Cleared existing rows in public.{table_name}")
+        return True
+    except Exception as exc:
+        print(f"[WARN] Could not clear table public.{table_name}: {exc}")
+        return False
+
+
+def resolve_item_label(item_id: str, name_map: Dict[str, str]) -> str:
+    item = str(item_id or "").strip()
+    if not item:
+        return "Unknown Item"
+    return name_map.get(item.upper(), item.replace("_", " ").title())
+
+
+def map_item_list(items: List[str], name_map: Dict[str, str]) -> List[str]:
+    return [resolve_item_label(item, name_map) for item in (items or [])]
+
+
+def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[str, str]:
+    """Fetch ID -> human-readable name map from a Supabase masterlist table."""
+    configured = masterlist_table or os.environ.get("MASTERLIST_TABLE")
+    table_candidates = [
+        configured,
+        "masterlist",
+        "price_masterlist",
+        "item_masterlist",
+        "service_masterlist",
+    ]
+    table_candidates = [t for t in table_candidates if t]
+
+    id_candidates = [
+        "item_id",
+        "service_id",
+        "item_code",
+        "service_code",
+        "code",
+        "sku",
+        "id",
+    ]
+    name_candidates = [
+        "item_name",
+        "service_name",
+        "name",
+        "title",
+        "display_name",
+        "description",
+    ]
+
+    for table_name in table_candidates:
+        try:
+            response = supabase.table(table_name).select("*").limit(5000).execute()
+            rows = response.data or []
+            if not rows:
+                continue
+
+            sample = rows[0]
+            key_lookup = {str(k).lower(): k for k in sample.keys()}
+            id_col = next((key_lookup[c] for c in id_candidates if c in key_lookup), None)
+            name_col = next((key_lookup[c] for c in name_candidates if c in key_lookup), None)
+            if not id_col or not name_col:
+                continue
+
+            mapping = {}
+            for row in rows:
+                raw_id = row.get(id_col)
+                raw_name = row.get(name_col)
+                if raw_id is None or raw_name is None:
+                    continue
+                key = str(raw_id).strip().upper()
+                value = str(raw_name).strip()
+                if key and value:
+                    mapping[key] = value
+
+            if mapping:
+                print(f"[INFO] Loaded masterlist map from {table_name} ({len(mapping)} items)")
+                return mapping
+        except Exception as exc:
+            print(f"[WARN] Masterlist lookup failed for table {table_name}: {exc}")
+
+    return {}
+
+
 def records_from_dataframe(df: pd.DataFrame) -> List[Dict]:
     """Convert dataframe to list of records for Supabase."""
     records = []
@@ -309,7 +406,7 @@ def get_status():
 @app.route("/api/upload", methods=["POST"])
 def upload_csv():
     """Upload and process a CSV file through the ETL pipeline."""
-    global pipeline_status
+    global pipeline_status, latest_loaded_table, latest_upload_time
     
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
@@ -367,6 +464,9 @@ def upload_csv():
         # Use original uploaded filename for table naming to avoid timestamp-based table drift.
         table_name = sanitize_identifier(Path(safe_name).stem, "table")
 
+        # Ensure a fresh dataset view for ML when the same table name is re-uploaded.
+        clear_table_rows(table_name)
+
         rc, etl_output = run_etl_script(saved_file, table_name)
         if etl_output:
             etl_log_tail = [line for line in etl_output.splitlines() if line.strip()][-15:]
@@ -389,12 +489,15 @@ def upload_csv():
         pipeline_status["message"] = "Data stored in warehouse successfully!"
         
         pipeline_status["end_time"] = datetime.now().isoformat()
+        latest_loaded_table = table_name
+        latest_upload_time = pipeline_status["end_time"]
         
         return jsonify({
             "success": True,
             "rows": len(cleaned_df),
             "columns": list(cleaned_df.columns),
             "table_name": table_name,
+            "latest_loaded_table": latest_loaded_table,
             "saved_file": str(saved_file.relative_to(PROJECT_ROOT)),
             "load_warning": load_warning,
             "load_hint": load_hint,
@@ -409,102 +512,150 @@ def upload_csv():
 
 @app.route("/api/ml/analyze", methods=["POST"])
 def run_ml_analysis():
-    """Run ML analysis on the loaded data."""
-    global pipeline_status
-    
+    """Run hybrid MBA analysis and return frontend-ready recommendations."""
+    global pipeline_status, latest_loaded_table
+
     pipeline_status["step"] = 5
     pipeline_status["message"] = "Running ML analysis..."
-    
+
     try:
-        # Try to fetch data from Supabase
-        supabase = get_supabase()
-        
-        # Get data from hairstylist dataset
         payload = request.get_json(silent=True) or {}
-        table_name = payload.get("table_name", "teradrip_lab_report_2_datasets_hairstylist_dataset")
-        response = supabase.table(table_name).select("*").execute()
-        
-        if not response.data:
-            return jsonify({"error": "No data found in table"}), 404
-        
-        df = pd.DataFrame(response.data)
-        
-        # Run basic association analysis
-        # Drop metadata columns
-        metadata_cols = ["id", "created_at", "hairstylist_transaction_id", 
-                        "customer_transaction_id", "transaction_date", "items_used"]
-        feature_cols = [col for col in df.columns if col not in metadata_cols]
-        
-        if not feature_cols:
-            return jsonify({"error": "No feature columns found"}), 400
-        
-        # Calculate item frequencies
-        feature_df = df[feature_cols].astype(bool)
-        item_counts = feature_df.sum().sort_values(ascending=False)
-        
-        # Find co-occurrence patterns (simplified association rules)
-        recommendations = []
-        for col1 in feature_cols[:5]:  # Top 5 items
-            for col2 in feature_cols:
-                if col1 != col2:
-                    both = ((df[col1].astype(bool)) & (df[col2].astype(bool))).sum()
-                    col1_count = df[col1].astype(bool).sum()
-                    if col1_count > 0:
-                        confidence = (both / col1_count) * 100
-                        if confidence > 50:
-                            recommendations.append({
-                                "if_item": col1.replace("_", " ").title(),
-                                "then_item": col2.replace("_", " ").title(),
-                                "confidence": round(confidence, 1),
-                                "support": both
-                            })
-        
-        # Sort by confidence and take top recommendations
-        recommendations.sort(key=lambda x: x["confidence"], reverse=True)
-        top_recommendations = recommendations[:10]
-        
+        requested_table = payload.get("table_name")
+        source_table = latest_loaded_table or requested_table or "teradrip_datasets_hairstylist_datasets"
+        output_table = payload.get("output_table", "ml_recommendations")
+        limit = payload.get("limit")
+        refresh = bool(payload.get("refresh", True))
+
+        supabase = get_supabase()
+        final_record = None
+
+        if refresh:
+            engine = TeraDripMBAEngine(
+                source_table=source_table,
+                output_table=output_table,
+                max_loops=5,
+            )
+            run_result = engine.run(limit=limit, persist=True)
+            final_record = run_result.get("final") or {}
+        else:
+            latest = (
+                supabase.table(output_table)
+                .select("*")
+                .eq("source_table", source_table)
+                .order("generated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if latest.data:
+                final_record = latest.data[0]
+
+        if not final_record:
+            return jsonify({"error": "No ML result found. Run with refresh=true first."}), 404
+
+        ml_payload = final_record.get("payload", {})
+        metrics = final_record.get("metrics", {})
+        governance = final_record.get("governance", {})
+
+        if isinstance(ml_payload, str):
+            ml_payload = json.loads(ml_payload)
+        if isinstance(metrics, str):
+            metrics = json.loads(metrics)
+        if isinstance(governance, str):
+            governance = json.loads(governance)
+
+        name_map = fetch_masterlist_map(
+            supabase,
+            masterlist_table=payload.get("masterlist_table") or os.environ.get("MASTERLIST_TABLE"),
+        )
+
+        top_bundles = []
+        for bundle in (ml_payload.get("top_bundles", []) or []):
+            mapped_bundle = dict(bundle)
+            mapped_bundle["items"] = map_item_list(bundle.get("items", []), name_map)
+            top_bundles.append(mapped_bundle)
+
+        mapped_fbt_rows = []
+        for row in (ml_payload.get("frequently_bought_together", []) or []):
+            mapped_row = dict(row)
+            mapped_row["if_items"] = map_item_list(row.get("if_items", []), name_map)
+            mapped_row["then_items"] = map_item_list(row.get("then_items", []), name_map)
+            mapped_fbt_rows.append(mapped_row)
+
+        mapped_promos = []
+        for promo in (ml_payload.get("promo_recommendations", []) or []):
+            mapped_promo = dict(promo)
+            mapped_promo["trigger_items"] = map_item_list(promo.get("trigger_items", []), name_map)
+            mapped_promo["target_items"] = map_item_list(promo.get("target_items", []), name_map)
+            mapped_promos.append(mapped_promo)
+
+        mapped_cross_sell = {}
+        for base_item, suggestions in (ml_payload.get("cross_sell_suggestions", {}) or {}).items():
+            mapped_base = resolve_item_label(base_item, name_map)
+            mapped_cross_sell[mapped_base] = map_item_list(suggestions or [], name_map)
+
+        fbt_rows = mapped_fbt_rows
+        top_recommendations = []
+        for row in fbt_rows[:10]:
+            if_items = row.get("if_items", [])
+            then_items = row.get("then_items", [])
+            if_item = if_items[0] if if_items else "Item A"
+            then_item = then_items[0] if then_items else "Item B"
+            conf = float(row.get("confidence", 0.0)) * 100
+            top_recommendations.append(
+                {
+                    "if_item": if_item,
+                    "then_item": then_item,
+                    "confidence": round(conf, 1),
+                    "support": row.get("support", 0),
+                }
+            )
+
+        business_insights = ml_payload.get("business_insights", [])
+        insight_lines = [
+            {"text": f"> Insight: {line}", "type": "info"}
+            for line in business_insights[:3]
+        ]
+
         pipeline_status["message"] = "ML analysis complete!"
-        
-        return jsonify({
-            "success": True,
-            "total_records": len(df),
-            "feature_columns": feature_cols,
-            "item_frequencies": item_counts.to_dict(),
-            "recommendations": top_recommendations,
-            "logs": [
-                {"text": "> Connecting to Warehouse...", "type": "info"},
-                {"text": f"> Fetching {table_name} data...", "type": "info"},
-                {"text": f"> Records: {len(df):,}", "type": "info"},
-                {"text": "> Running Association Analysis...", "type": "warning"},
-                {"text": f"> Analyzing {len(feature_cols)} features...", "type": "info"},
-                {"text": f"> Found {len(recommendations)} association rules", "type": "info"},
-                {"text": "✓ Analysis Complete!", "type": "success"}
-            ]
-        })
-        
+
+        return jsonify(
+            {
+                "success": True,
+                "run_id": final_record.get("run_id"),
+                "source_table": source_table,
+                "requested_table": requested_table,
+                "latest_loaded_table": latest_loaded_table,
+                "algorithm": metrics.get("algorithm"),
+                "total_records": int(metrics.get("basket_stats", {}).get("transactions", 0)),
+                "feature_columns": [],
+                "item_frequencies": {},
+                "recommendations": top_recommendations,
+                "top_bundles": top_bundles,
+                "frequently_bought_together": fbt_rows,
+                "cross_sell_suggestions": mapped_cross_sell,
+                "promo_recommendations": mapped_promos,
+                "business_insights": business_insights,
+                "governance": governance,
+                "logs": [
+                    {"text": "> Connecting to Warehouse...", "type": "info"},
+                    {"text": f"> Running Hybrid MBA on {source_table}...", "type": "info"},
+                    {"text": f"> Algorithm: {metrics.get('algorithm', 'n/a')}", "type": "info"},
+                    {
+                        "text": (
+                            f"> Records: {int(metrics.get('basket_stats', {}).get('transactions', 0)):,}"
+                        ),
+                        "type": "info",
+                    },
+                    {"text": f"> Rules generated: {int(metrics.get('rule_count', 0)):,}", "type": "info"},
+                    {"text": f"> Manual review flags: {len(governance.get('anomalies', []))}", "type": "warning"},
+                    *insight_lines,
+                    {"text": "✓ Analysis Complete!", "type": "success"},
+                ],
+            }
+        )
+
     except Exception as e:
-        # Return simulated results if Supabase is unavailable
-        return jsonify({
-            "success": True,
-            "simulated": True,
-            "message": f"Using simulated data (Supabase: {str(e)[:30]})",
-            "recommendations": [
-                {"if_item": "Neck Strip", "then_item": "Disposable Cape", "confidence": 94.2},
-                {"if_item": "Sectioning Clips", "then_item": "Tail Comb", "confidence": 87.5},
-                {"if_item": "Mixing Bowl", "then_item": "Hair Color Brush", "confidence": 100.0},
-                {"if_item": "Bleach Powder", "then_item": "Developer Vol 20/30", "confidence": 95.8},
-                {"if_item": "Professional Hair Shears", "then_item": "Neck Strip", "confidence": 91.3}
-            ],
-            "logs": [
-                {"text": "> Connecting to Warehouse...", "type": "info"},
-                {"text": "> Using cached sample data...", "type": "warning"},
-                {"text": "> Records: 1,000", "type": "info"},
-                {"text": "> Running Association Analysis...", "type": "warning"},
-                {"text": "> Analyzing 16 features...", "type": "info"},
-                {"text": "> Found 5 strong association rules", "type": "info"},
-                {"text": "✓ Analysis Complete!", "type": "success"}
-            ]
-        })
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/data/stats")

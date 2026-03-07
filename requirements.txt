@@ -4,3 +4,4 @@ pandas
 psycopg[binary]
 python-dotenv
 supabase
+mlxtend

@@ -772,6 +772,60 @@
 
         /* Recommendations Container */
         .recommendations-container > .event:last-child { margin-bottom: 0; }
+
+        .widget-group {
+            margin-top: 10px;
+            padding: 12px;
+            border: 1px solid var(--glass-border);
+            border-radius: var(--border-radius-xs);
+            background: rgba(255, 255, 255, 0.45);
+        }
+
+        .widget-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .graph-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 12px;
+        }
+
+        .graph-card {
+            border: 1px solid var(--glass-border);
+            border-radius: var(--border-radius-xs);
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .bar-row { margin-bottom: 8px; }
+
+        .bar-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 3px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .bar-track {
+            width: 100%;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(30, 27, 75, 0.08);
+            overflow: hidden;
+        }
+
+        .bar-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-cyan));
+        }
     </style>
 </head>
 <body>
@@ -921,20 +975,22 @@
 
                     <!-- Recommendations -->
                     <div class="card">
-                        <div class="card-title" style="margin-bottom: 15px;">📅 Top Recommendations</div>
-                        <div class="recommendations-container">
-                            <div class="event yellow">
-                                <div class="event-title">💇 Haircut + Hair Spa Bundle</div>
-                                <div class="event-desc">High correlation - 87% confidence</div>
-                            </div>
-                            <div class="event light">
-                                <div class="event-title">💅 Manicure + Pedicure Package</div>
-                                <div class="event-desc">Frequently bought together - 92% confidence</div>
-                            </div>
-                            <div class="event light">
-                                <div class="event-title">🎨 Color + Treatment Combo</div>
-                                <div class="event-desc">Recommended add-on - 78% confidence</div>
-                            </div>
+                        <div class="card-title" style="margin-bottom: 15px;">📅 Recommendation Widgets</div>
+                        <div class="widget-group">
+                            <div class="widget-title">Top Bundles</div>
+                            <div class="recommendations-container" id="topBundlesContainer"></div>
+                        </div>
+                        <div class="widget-group">
+                            <div class="widget-title">Frequently Bought Together</div>
+                            <div class="recommendations-container" id="fbtContainer"></div>
+                        </div>
+                        <div class="widget-group">
+                            <div class="widget-title">Promo Recommendation Generator</div>
+                            <div class="recommendations-container" id="promoContainer"></div>
+                        </div>
+                        <div class="widget-group">
+                            <div class="widget-title">Cross-Sell Suggestions</div>
+                            <div id="crossSellContainer"></div>
                         </div>
                     </div>
                 </div>
@@ -945,10 +1001,21 @@
 
             <!-- Analytics Tab -->
             <div id="tab-analytics" class="tab-panel" style="display:none;">
-                <div class="card" style="padding: 40px; text-align: center; color: var(--text-muted);">
-                    <div style="font-size: 48px; margin-bottom: 16px;">📈</div>
-                    <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">Analytics</div>
-                    <div style="font-size: 14px;">Run your ETL pipeline first to see analytics.</div>
+                <div class="card" style="padding: 24px; color: var(--text-muted);">
+                    <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">📈 Business Insights</div>
+                    <div id="insightsContainer" style="font-size: 14px; line-height: 1.6;">Run your ETL + ML pipeline to populate insights.</div>
+                    <div class="graph-grid">
+                        <div class="graph-card">
+                            <div class="widget-title">Bundle Support Distribution</div>
+                            <div id="bundleSupportGraph"></div>
+                        </div>
+                        <div class="graph-card">
+                            <div class="widget-title">Rule Confidence Distribution</div>
+                            <div id="ruleConfidenceGraph"></div>
+                        </div>
+                    </div>
+                    <div style="font-size: 16px; font-weight: 600; color: var(--text-dark); margin-top: 18px; margin-bottom: 8px;">🛡 Governance Flags</div>
+                    <div id="governanceContainer" style="font-size: 13px; line-height: 1.5;">No governance data yet.</div>
                 </div>
             </div>
 
@@ -995,6 +1062,7 @@
         let processTime = 0;
         let timeInterval = null;
         let currentTableName = null;
+        let currentUploadTimestamp = null;
 
         const tabTitles = { dashboard: 'Welcome to TeraDrip Salon', analytics: 'Analytics', data: 'Data Overview' };
 
@@ -1128,7 +1196,8 @@
                 const result = await response.json();
 
                 if (response.ok && result.success) {
-                    currentTableName = result.table_name;
+                    currentTableName = result.latest_loaded_table || result.table_name;
+                    currentUploadTimestamp = (result.status && result.status.end_time) || new Date().toISOString();
 
                     if (Array.isArray(result.etl_log_tail) && result.etl_log_tail.length > 0) {
                         addConsoleLine(consoleEl, '> ETL SCRIPT OUTPUT:', 'info');
@@ -1233,7 +1302,11 @@
                 const response = await fetch(`${API_BASE}/ml/analyze`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ table_name: currentTableName })
+                    body: JSON.stringify({
+                        table_name: currentTableName,
+                        refresh: true,
+                        upload_time: currentUploadTimestamp
+                    })
                 });
 
                 const result = await response.json();
@@ -1258,10 +1331,7 @@
                             clearInterval(logInterval);
                             updateStepStates(5);
                             
-                            // Update recommendations
-                            if (result.recommendations && result.recommendations.length > 0) {
-                                updateRecommendations(result.recommendations);
-                            }
+                            renderMLWidgets(result);
                         }
                     }, 400);
                 } else {
@@ -1269,8 +1339,21 @@
                 }
             } catch (error) {
                 console.error('ML error:', error);
-                addConsoleLine(consoleEl, '> Backend unavailable, running simulation...', 'warning');
-                runSimulatedML(consoleEl, segments);
+                const message = String(error && error.message ? error.message : 'ML analysis failed');
+                if (message.toLowerCase().includes('failed to fetch')) {
+                    addConsoleLine(consoleEl, '> Backend unavailable, running simulation...', 'warning');
+                    runSimulatedML(consoleEl, segments);
+                    return;
+                }
+
+                addConsoleLine(consoleEl, `> ML Error: ${message}`, 'error');
+                document.getElementById('mlPercent').textContent = '0%';
+                ['topBundlesContainer', 'fbtContainer', 'promoContainer', 'crossSellContainer'].forEach((id) => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.innerHTML = '<div class="event light"><div class="event-desc">No recommendations available. Run ETL then retry ML.</div></div>';
+                    }
+                });
             }
         }
 
@@ -1303,29 +1386,116 @@
             }, 500);
         }
 
-        function updateRecommendations(recommendations) {
-            const container = document.querySelector('.recommendations-container');
+        function renderBarGraph(containerId, rows) {
+            const container = document.getElementById(containerId);
             if (!container) return;
-            
+            if (!Array.isArray(rows) || rows.length === 0) {
+                container.innerHTML = '<div class="event light"><div class="event-desc">No chart data available yet.</div></div>';
+                return;
+            }
 
-            const icons = ['💇', '💅', '🎨', '✂️', '💆'];
-
-
-            const eventsHtml = recommendations.slice(0, 3).map((rec, i) => {
-                const icon = icons[i % icons.length];
-                const bgClass = i === 0 ? 'yellow' : 'light';
-                const ifItem = rec.if_item || rec.antecedent || 'Item A';
-                const thenItem = rec.then_item || rec.consequent || 'Item B';
-                const confidence = rec.confidence || 85;
+            const maxValue = Math.max(...rows.map(r => Number(r.value || 0)), 0.0001);
+            container.innerHTML = rows.map((r) => {
+                const value = Number(r.value || 0);
+                const width = Math.max(2, (value / maxValue) * 100);
                 return `
-                    <div class="event ${bgClass}">
-                        <div class="event-title">${icon} ${ifItem} + ${thenItem}</div>
-                        <div class="event-desc">Confidence: ${confidence}%</div>
+                    <div class="bar-row">
+                        <div class="bar-label">${r.label} (${r.display})</div>
+                        <div class="bar-track"><div class="bar-fill" style="width:${width}%;"></div></div>
                     </div>
                 `;
             }).join('');
-            
-            container.innerHTML = eventsHtml;
+        }
+
+        function renderMLWidgets(result) {
+            const bundlesContainer = document.getElementById('topBundlesContainer');
+            const fbtContainer = document.getElementById('fbtContainer');
+            const promoContainer = document.getElementById('promoContainer');
+            const crossSellContainer = document.getElementById('crossSellContainer');
+            const insightsContainer = document.getElementById('insightsContainer');
+            const governanceContainer = document.getElementById('governanceContainer');
+            if (!bundlesContainer || !fbtContainer || !promoContainer || !crossSellContainer) return;
+
+            const topBundles = Array.isArray(result.top_bundles) ? result.top_bundles : [];
+            const fbt = Array.isArray(result.frequently_bought_together) ? result.frequently_bought_together : [];
+            const promos = Array.isArray(result.promo_recommendations) ? result.promo_recommendations : [];
+            const insights = Array.isArray(result.business_insights) ? result.business_insights : [];
+            const governance = result.governance || {};
+            const crossSell = result.cross_sell_suggestions || {};
+
+            const bundleCards = topBundles.slice(0, 4).map((bundle, i) => {
+                const bgClass = i === 0 ? 'yellow' : 'light';
+                const items = (bundle.items || []).slice(0, 4).join(' + ');
+                const supportPct = Math.round((bundle.support || 0) * 1000) / 10;
+                return `
+                    <div class="event ${bgClass}">
+                        <div class="event-title">📦 Bundle: ${items || 'N/A'}</div>
+                        <div class="event-desc">Support ${supportPct}% • ${(bundle.explanation || 'Strong co-occurrence pattern')}</div>
+                    </div>
+                `;
+            }).join('');
+
+            const fbtCards = fbt.slice(0, 4).map((row) => {
+                const left = (row.if_items || []).join(' + ');
+                const right = (row.then_items || []).join(' + ');
+                const confidencePct = Math.round((row.confidence || 0) * 1000) / 10;
+                return `
+                    <div class="event light">
+                        <div class="event-title">🛒 FBT: ${left || 'N/A'} → ${right || 'N/A'}</div>
+                        <div class="event-desc">Confidence ${confidencePct}% • Lift ${(row.lift || 0).toFixed(2)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            const promoCards = promos.slice(0, 4).map((promo) => {
+                const trigger = (promo.trigger_items || []).join(', ');
+                return `
+                    <div class="event light">
+                        <div class="event-title">🏷 Promo: ${(promo.offer_type || 'bundle_discount').replaceAll('_', ' ')}</div>
+                        <div class="event-desc">${promo.message || ''} | Trigger: ${trigger || 'N/A'}</div>
+                    </div>
+                `;
+            }).join('');
+
+            bundlesContainer.innerHTML = bundleCards || '<div class="event light"><div class="event-desc">No bundle data yet.</div></div>';
+            fbtContainer.innerHTML = fbtCards || '<div class="event light"><div class="event-desc">No FBT data yet.</div></div>';
+            promoContainer.innerHTML = promoCards || '<div class="event light"><div class="event-desc">No promo suggestions yet.</div></div>';
+
+            const crossSellEntries = Object.entries(crossSell).slice(0, 3);
+            crossSellContainer.innerHTML = crossSellEntries.length > 0
+                ? `<div class="event light"><div class="event-desc">${crossSellEntries.map(([k, v]) => `${k} -> ${(v || []).slice(0, 3).join(', ')}`).join(' | ')}</div></div>`
+                : '<div class="event light"><div class="event-desc">No cross-sell map available yet.</div></div>';
+
+            if (insightsContainer) {
+                insightsContainer.innerHTML = insights.length > 0
+                    ? insights.slice(0, 4).map(text => `<div style="margin-bottom: 8px;">• ${text}</div>`).join('')
+                    : 'No business insights generated yet.';
+            }
+
+            if (governanceContainer) {
+                const anomalies = Array.isArray(governance.anomalies) ? governance.anomalies : [];
+                governanceContainer.innerHTML = anomalies.length > 0
+                    ? anomalies.slice(0, 4).map(a => `<div style="margin-bottom: 6px; color:#b91c1c;">• ${a.rule_key || 'rule'} (${a.reason || 'flag'})</div>`).join('')
+                    : '<span style="color:#16a34a;">No anomalies flagged.</span>';
+            }
+
+            renderBarGraph(
+                'bundleSupportGraph',
+                topBundles.slice(0, 6).map((b) => ({
+                    label: (b.items || []).slice(0, 2).join(' + ') || 'bundle',
+                    value: Number(b.support || 0),
+                    display: `${Math.round(Number(b.support || 0) * 1000) / 10}%`,
+                }))
+            );
+
+            renderBarGraph(
+                'ruleConfidenceGraph',
+                fbt.slice(0, 6).map((r) => ({
+                    label: `${(r.if_items || []).slice(0, 1).join(', ')} -> ${(r.then_items || []).slice(0, 1).join(', ')}`,
+                    value: Number(r.confidence || 0),
+                    display: `${Math.round(Number(r.confidence || 0) * 1000) / 10}%`,
+                }))
+            );
         }
 
         async function fetchDataStats() {
