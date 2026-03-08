@@ -919,7 +919,7 @@
             grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
             gap: 8px;
             align-items: end;
-            margin-top: 8px;
+            margin-top: 28px;
         }
 
         .trend-bar {
@@ -934,8 +934,18 @@
             box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
         }
 
+        .trend-bar-value {
+            position: absolute;
+            top: -18px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-dark);
+        }
+
         .trend-meta {
-            margin-top: 6px;
+            margin-top: 8px;
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
             gap: 8px;
@@ -1584,7 +1594,29 @@
             return Number(delta.absolute || 0) > 0 ? 'up' : 'down';
         }
 
-        function renderTrendBars(containerId, trendRows, latestRunId) {
+        function friendlyDatasetName(name) {
+            const raw = String(name || 'dataset');
+            return raw.replace(/^teradrip[_-]datasets?[_-]/i, '').replaceAll('_', ' ');
+        }
+
+        function formatRunDate(value) {
+            if (!value) return 'Unknown date';
+            const d = new Date(value);
+            if (Number.isNaN(d.getTime())) return String(value);
+            return d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        function plainDelta(metricLabel, latestValue, baselineValue, formatter) {
+            const latestText = formatter(latestValue);
+            const baseText = formatter(baselineValue);
+            if (Number(latestValue || 0) === Number(baselineValue || 0)) {
+                return `${metricLabel} stayed the same at ${latestText}.`;
+            }
+            const direction = Number(latestValue || 0) > Number(baselineValue || 0) ? 'higher' : 'lower';
+            return `${metricLabel} is ${direction}: ${latestText} now vs ${baseText} before.`;
+        }
+
+        function renderTrendLine(containerId, trendRows, latestRunId) {
             const container = document.getElementById(containerId);
             if (!container) return;
             if (!Array.isArray(trendRows) || trendRows.length === 0) {
@@ -1593,16 +1625,25 @@
             }
 
             const maxRules = Math.max(...trendRows.map(r => Number(r.rule_count || 0)), 1);
-            const bars = trendRows.map((row) => {
+            const bars = trendRows.map((row, index) => {
                 const rules = Number(row.rule_count || 0);
                 const height = Math.max(8, Math.round((rules / maxRules) * 100));
                 const isLatest = String(row.run_id || '') === String(latestRunId || '');
                 const confPct = (Number(row.avg_confidence || 0) * 100).toFixed(1);
-                const title = `${row.source_table || 'dataset'} | rules=${rules} | avg_conf=${confPct}%`;
-                return `<div class="trend-bar ${isLatest ? 'latest' : ''}" style="height:${height}%;" title="${title}"></div>`;
+                const datasetName = friendlyDatasetName(row.source_table || 'dataset');
+                const title = `${datasetName} | rules=${rules} | avg_conf=${confPct}%`;
+                return `
+                    <div class="trend-bar ${isLatest ? 'latest' : ''}" style="height:${height}%;" title="${title}">
+                        <span class="trend-bar-value">${rules.toLocaleString()}</span>
+                    </div>
+                `;
             }).join('');
 
-            const labels = trendRows.map((row) => `<div title="${row.source_table || 'dataset'}">${shortName(row.source_table || 'dataset', 12)}</div>`).join('');
+            const labels = trendRows.map((row, index) => {
+                const datasetName = friendlyDatasetName(row.source_table || 'dataset');
+                const isLatest = String(row.run_id || '') === String(latestRunId || '');
+                return `<div title="${datasetName}">${shortName(`Run ${index + 1}${isLatest ? ' (Latest)' : ''}`, 12)}</div>`;
+            }).join('');
             container.innerHTML = `<div class="trend-bars">${bars}</div><div class="trend-meta">${labels}</div>`;
         }
 
@@ -1615,7 +1656,7 @@
             if (!comparison || !comparison.latest) {
                 summaryEl.textContent = 'Run ETL + ML to compare the latest dataset against historical Supabase runs.';
                 kpiGridEl.innerHTML = '';
-                renderTrendBars('analyticsTrendChart', [], null);
+                renderTrendLine('analyticsTrendChart', [], null);
                 recEl.innerHTML = 'No recommendation summary yet.';
                 return;
             }
@@ -1624,8 +1665,9 @@
             const baseline = comparison.historical_baseline || {};
             const deltas = comparison.deltas || {};
             const historyCount = Number(comparison.historical_run_count || 0);
-
-            summaryEl.textContent = `Latest dataset "${latest.source_table || 'n/a'}" compared against ${historyCount} historical run(s).`;
+            const datasetName = friendlyDatasetName(latest.source_table || 'n/a');
+            const runDate = formatRunDate(latest.generated_at);
+            summaryEl.textContent = `This view compares your latest run (${datasetName}, ${runDate}) against ${historyCount} previous run(s), so you can quickly see if results improved or dropped.`;
 
             const kpis = [
                 { key: 'transactions', title: 'Transactions', format: (v) => Number(v || 0).toLocaleString() },
@@ -1646,14 +1688,17 @@
                 `;
             }).join('');
 
-            renderTrendBars('analyticsTrendChart', comparison.recent_trend || [], latest.run_id);
+            renderTrendLine('analyticsTrendChart', comparison.recent_trend || [], latest.run_id);
 
             const insights = Array.isArray(result.business_insights) ? result.business_insights : [];
             const promos = Array.isArray(result.promo_recommendations) ? result.promo_recommendations : [];
             const recommendationLines = [];
-            if (insights.length > 0) recommendationLines.push(...insights.slice(0, 3).map((text) => `• ${text}`));
-            if (promos.length > 0) recommendationLines.push(`• Priority promo: ${promos[0].message || 'Bundle discount on high-confidence pairs.'}`);
-            if (recommendationLines.length === 0) recommendationLines.push('• No ML business recommendation returned for this run.');
+            recommendationLines.push(`• ${plainDelta('Transactions', latest.transactions, baseline.transactions, (v) => Number(v || 0).toLocaleString())}`);
+            recommendationLines.push(`• ${plainDelta('Rules generated', latest.rule_count, baseline.rule_count, (v) => Number(v || 0).toLocaleString())}`);
+            recommendationLines.push(`• ${plainDelta('Average confidence', latest.avg_confidence, baseline.avg_confidence, (v) => `${(Number(v || 0) * 100).toFixed(1)}%`)}`);
+            if (promos.length > 0) recommendationLines.push(`• Suggested promo to try first: ${promos[0].message || 'Bundle discount on high-confidence pairs.'}`);
+            if (insights.length > 0) recommendationLines.push(...insights.slice(0, 2).map((text) => `• Insight: ${text}`));
+            if (recommendationLines.length === 0) recommendationLines.push('• No recommendation summary yet. Run ETL + ML first.');
             recEl.innerHTML = recommendationLines.map((line) => `<div style="margin-bottom: 6px;">${line}</div>`).join('');
         }
 
@@ -1717,17 +1762,26 @@
 
         async function fetchDataStats() {
             try {
-                const response = await fetch(`${API_BASE}/data/stats`);
+                const tableParam = currentTableName ? `?table_name=${encodeURIComponent(currentTableName)}` : '';
+                const response = await fetch(`${API_BASE}/data/stats${tableParam}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const stats = await response.json();
-                
+
                 const statCards = document.querySelectorAll('#tab-data .data-stat-value');
+                const statDescs = document.querySelectorAll('#tab-data .data-stat-desc');
                 if (statCards.length >= 3) {
                     statCards[0].textContent = (stats.records || 0).toLocaleString();
                     statCards[1].textContent = stats.transforms || 0;
                     statCards[2].textContent = stats.tables || 0;
                 }
+                if (statDescs.length >= 3) {
+                    const tableLabel = stats.table_name || currentTableName || 'N/A';
+                    statDescs[0].textContent = `Rows currently stored in table: ${tableLabel}`;
+                    statDescs[1].textContent = `Detected columns in ${tableLabel} (from database schema)`;
+                    statDescs[2].textContent = 'Public database tables currently available in the warehouse';
+                }
             } catch (error) {
-                console.log('Stats fetch failed, using defaults');
+                console.log('Stats fetch failed:', error);
             }
         }
 

@@ -266,7 +266,15 @@ class TeraDripMBAEngine:
         rules = rules.sort_values(["confidence", "lift", "support"], ascending=False).reset_index(drop=True)
         return algorithm, itemsets, rules
 
-    def _score_rules(self, rules: pd.DataFrame, basket: pd.DataFrame) -> float:
+    def _target_rule_count(self, basket: pd.DataFrame) -> int:
+        stats = self.basket_stats(basket)
+        n_rows = stats["transactions"]
+        n_items = stats["distinct_items"]
+        density = stats["density"]
+        est = (n_rows ** 0.45) * (n_items ** 0.35) * (1.0 + (density * 2.2))
+        return int(clamp(est, 12, 220))
+
+    def _score_rules(self, rules: pd.DataFrame, basket: pd.DataFrame, target_rules: int) -> float:
         if rules.empty:
             return 0.0
         distinct_items = set()
@@ -275,8 +283,15 @@ class TeraDripMBAEngine:
             distinct_items.update(row.consequent_items)
 
         coverage = len(distinct_items) / max(1, basket.shape[1])
-        mean_quality = float((rules["confidence"] * rules["lift"]).mean())
-        return round((mean_quality * 0.75) + (coverage * 0.25), 6)
+        mean_conf = float(rules["confidence"].mean())
+        mean_lift = float(rules["lift"].mean())
+        normalized_lift = clamp(mean_lift / 4.0, 0.0, 1.0)
+
+        # Reward quality + item coverage, while discouraging too-few/too-many rules.
+        quality = (mean_conf * 0.50) + (normalized_lift * 0.30) + (coverage * 0.20)
+        count_penalty = abs(len(rules) - target_rules) / max(float(target_rules), 1.0)
+        low_conf_penalty = max(0.0, 0.45 - mean_conf) * 0.55
+        return round(quality - (count_penalty * 0.22) - low_conf_penalty, 6)
 
     def _stability_report(self, new_rules: pd.DataFrame, historical_rules: List[Dict[str, Any]]) -> Dict[str, Any]:
         old_map = {row["rule_key"]: row for row in historical_rules if "rule_key" in row}
@@ -335,45 +350,112 @@ class TeraDripMBAEngine:
         plateau_hits = 0
         previous_score = None
         loop_trace: List[Dict[str, Any]] = []
+        target_rules = self._target_rule_count(basket)
+        min_acceptable_rules = max(8, int(target_rules * 0.35))
 
         base = self.auto_thresholds(basket)
         for loop_id in range(1, self.max_loops + 1):
             min_support = clamp(base.min_support * (1.0 - (loop_id - 1) * 0.08), 0.003, 0.25)
             min_conf = clamp(base.min_confidence * (1.0 - (loop_id - 1) * 0.04), 0.20, 0.95)
             min_lift = clamp(base.min_lift * (1.0 - (loop_id - 1) * 0.03), 1.01, 3.0)
-            thresholds = Thresholds(round(min_support, 4), round(min_conf, 4), round(min_lift, 4))
+            candidate_thresholds = [
+                Thresholds(
+                    round(clamp(min_support * 1.12, 0.003, 0.25), 4),
+                    round(clamp(min_conf * 1.06, 0.20, 0.95), 4),
+                    round(clamp(min_lift * 1.05, 1.01, 3.0), 4),
+                ),  # stricter
+                Thresholds(round(min_support, 4), round(min_conf, 4), round(min_lift, 4)),  # baseline
+                Thresholds(
+                    round(clamp(min_support * 0.82, 0.003, 0.25), 4),
+                    round(clamp(min_conf * 0.92, 0.20, 0.95), 4),
+                    round(clamp(min_lift * 0.95, 1.01, 3.0), 4),
+                ),  # relaxed
+            ]
 
-            algo, itemsets, rules = self._mine_rules_once(basket, thresholds)
-            score = self._score_rules(rules, basket)
+            loop_best: Dict[str, Any] | None = None
+            candidate_scores: List[Dict[str, Any]] = []
+            for idx, thresholds in enumerate(candidate_thresholds, start=1):
+                algo, itemsets, rules = self._mine_rules_once(basket, thresholds)
+                score = self._score_rules(rules, basket, target_rules=target_rules)
+                candidate_scores.append(
+                    {
+                        "candidate": idx,
+                        "thresholds": thresholds.__dict__,
+                        "algorithm": algo,
+                        "rules": int(len(rules)),
+                        "itemsets": int(len(itemsets)),
+                        "score": score,
+                    }
+                )
+                if loop_best is None or score > loop_best["score"]:
+                    loop_best = {
+                        "algorithm": algo,
+                        "thresholds": thresholds,
+                        "itemsets": itemsets,
+                        "rules": rules,
+                        "score": score,
+                    }
+
+            if loop_best is None:
+                continue
 
             loop_trace.append(
                 {
                     "loop": loop_id,
-                    "algorithm": algo,
-                    "thresholds": thresholds.__dict__,
-                    "itemsets": int(len(itemsets)),
-                    "rules": int(len(rules)),
-                    "score": score,
+                    "target_rules": int(target_rules),
+                    "selected_algorithm": loop_best["algorithm"],
+                    "selected_thresholds": loop_best["thresholds"].__dict__,
+                    "selected_rules": int(len(loop_best["rules"])),
+                    "selected_score": loop_best["score"],
+                    "candidates": candidate_scores,
                 }
             )
 
-            if best is None or score > best["score"]:
-                best = {
-                    "algorithm": algo,
-                    "thresholds": thresholds,
-                    "itemsets": itemsets,
-                    "rules": rules,
-                    "score": score,
-                }
+            if best is None or loop_best["score"] > best["score"]:
+                best = loop_best
 
-            if previous_score is not None and abs(score - previous_score) < 0.002:
+            if previous_score is not None and abs(loop_best["score"] - previous_score) < 0.0015:
                 plateau_hits += 1
             else:
                 plateau_hits = 0
 
-            previous_score = score
-            if plateau_hits >= 2:
+            previous_score = loop_best["score"]
+
+            # Stop early only after achieving useful rule volume.
+            if plateau_hits >= 2 and int(len(best["rules"])) >= min_acceptable_rules:
                 break
+
+        # Rescue pass: if rule volume is still too low, relax constraints further.
+        if best is not None and int(len(best["rules"])) < min_acceptable_rules:
+            rescue_base = best["thresholds"]
+            for rescue_idx in range(1, 4):
+                rescue_thresholds = Thresholds(
+                    round(clamp(rescue_base.min_support * (0.78 ** rescue_idx), 0.002, 0.25), 4),
+                    round(clamp(rescue_base.min_confidence * (0.90 ** rescue_idx), 0.18, 0.95), 4),
+                    round(clamp(rescue_base.min_lift * (0.94 ** rescue_idx), 1.01, 3.0), 4),
+                )
+                algo, itemsets, rules = self._mine_rules_once(basket, rescue_thresholds)
+                score = self._score_rules(rules, basket, target_rules=target_rules)
+                loop_trace.append(
+                    {
+                        "loop": f"rescue_{rescue_idx}",
+                        "target_rules": int(target_rules),
+                        "selected_algorithm": algo,
+                        "selected_thresholds": rescue_thresholds.__dict__,
+                        "selected_rules": int(len(rules)),
+                        "selected_score": score,
+                    }
+                )
+                if score > best["score"]:
+                    best = {
+                        "algorithm": algo,
+                        "thresholds": rescue_thresholds,
+                        "itemsets": itemsets,
+                        "rules": rules,
+                        "score": score,
+                    }
+                if int(len(best["rules"])) >= min_acceptable_rules:
+                    break
 
         if best is None:
             raise ValueError("Optimization failed: no model output")
@@ -523,6 +605,24 @@ class TeraDripMBAEngine:
 
         return insights
 
+    def _rule_quality_metrics(self, rules: pd.DataFrame, basket: pd.DataFrame) -> Dict[str, float]:
+        if rules.empty:
+            return {
+                "avg_confidence": 0.0,
+                "avg_lift": 0.0,
+                "item_coverage": 0.0,
+            }
+        items = set()
+        for row in rules.itertuples(index=False):
+            items.update(row.antecedent_items)
+            items.update(row.consequent_items)
+        coverage = len(items) / max(1, basket.shape[1])
+        return {
+            "avg_confidence": round(float(rules["confidence"].mean()), 6),
+            "avg_lift": round(float(rules["lift"].mean()), 6),
+            "item_coverage": round(float(coverage), 6),
+        }
+
     def _latest_historical_rules(self) -> List[Dict[str, Any]]:
         try:
             rows = select_table(self.output_table)
@@ -659,6 +759,8 @@ class TeraDripMBAEngine:
                 "basket_stats": self.basket_stats(basket),
                 "rule_count": int(len(rules)),
                 "itemset_count": int(len(itemsets)),
+                "quality": self._rule_quality_metrics(rules, basket),
+                "target_rule_count": int(self._target_rule_count(basket)),
                 "loop_trace": optimization["loop_trace"],
             }
 

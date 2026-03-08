@@ -7,9 +7,10 @@ import sys
 import re
 import json
 import subprocess
+import threading
 import warnings
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -50,6 +51,54 @@ pipeline_status = {
 # Tracks the most recent dataset table produced by /api/upload.
 latest_loaded_table: str | None = None
 latest_upload_time: str | None = None
+pending_job: Dict[str, Any] | None = None
+
+RUNTIME_STATE_PATH = PROJECT_ROOT / "src" / "3-back-end" / "runtime_state.json"
+_state_lock = threading.Lock()
+_resume_thread: threading.Thread | None = None
+
+
+def persist_runtime_state() -> None:
+    """Persist runtime state so interrupted work can resume after restart."""
+    payload = {
+        "pipeline_status": pipeline_status,
+        "latest_loaded_table": latest_loaded_table,
+        "latest_upload_time": latest_upload_time,
+        "pending_job": pending_job,
+        "saved_at": datetime.now().isoformat(),
+    }
+    try:
+        RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = RUNTIME_STATE_PATH.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(RUNTIME_STATE_PATH)
+    except Exception as exc:
+        print(f"[WARN] Could not persist runtime state: {exc}")
+
+
+def load_runtime_state() -> None:
+    """Load persisted runtime state."""
+    global pipeline_status, latest_loaded_table, latest_upload_time, pending_job
+    if not RUNTIME_STATE_PATH.exists():
+        return
+    try:
+        raw = json.loads(RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw.get("pipeline_status"), dict):
+            pipeline_status.update(raw["pipeline_status"])
+        latest_loaded_table = raw.get("latest_loaded_table")
+        latest_upload_time = raw.get("latest_upload_time")
+        pending = raw.get("pending_job")
+        pending_job = pending if isinstance(pending, dict) else None
+    except Exception as exc:
+        print(f"[WARN] Could not load runtime state: {exc}")
+
+
+def set_pending_job(job: Dict[str, Any] | None) -> None:
+    """Update pending job and persist runtime state."""
+    global pending_job
+    with _state_lock:
+        pending_job = job
+        persist_runtime_state()
 
 
 def sanitize_identifier(raw_name: str, fallback: str = "column") -> str:
@@ -248,6 +297,17 @@ def map_item_list(items: List[str], name_map: Dict[str, str]) -> List[str]:
     return [resolve_item_label(item, name_map) for item in (items or [])]
 
 
+def map_ids_in_text(text: str, name_map: Dict[str, str]) -> str:
+    """Replace item-like IDs in free text with human-readable names."""
+    raw = str(text or "")
+    if not raw:
+        return ""
+
+    # Supports IDs like i00013, s00013, sku00123, etc.
+    pattern = re.compile(r"\b[a-z]{1,4}\d{3,}\b", flags=re.IGNORECASE)
+    return pattern.sub(lambda m: resolve_item_label(m.group(0), name_map), raw)
+
+
 def parse_json_field(value):
     if isinstance(value, str):
         try:
@@ -346,8 +406,11 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
         configured,
         "masterlist",
         "price_masterlist",
+        "price_list",
         "item_masterlist",
         "service_masterlist",
+        "products",
+        "services",
     ]
     table_candidates = [t for t in table_candidates if t]
 
@@ -363,6 +426,8 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
     name_candidates = [
         "item_name",
         "service_name",
+        "product_name",
+        "label",
         "name",
         "title",
         "display_name",
@@ -380,6 +445,29 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
             key_lookup = {str(k).lower(): k for k in sample.keys()}
             id_col = next((key_lookup[c] for c in id_candidates if c in key_lookup), None)
             name_col = next((key_lookup[c] for c in name_candidates if c in key_lookup), None)
+
+            # Heuristic fallback for non-standard schemas.
+            if not id_col:
+                id_col = next(
+                    (
+                        orig
+                        for lower, orig in key_lookup.items()
+                        if lower == "id"
+                        or lower.endswith("_id")
+                        or lower.endswith("_code")
+                        or "sku" in lower
+                    ),
+                    None,
+                )
+            if not name_col:
+                name_col = next(
+                    (
+                        orig
+                        for lower, orig in key_lookup.items()
+                        if "name" in lower or "label" in lower or "title" in lower
+                    ),
+                    None,
+                )
             if not id_col or not name_col:
                 continue
 
@@ -401,6 +489,76 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
             print(f"[WARN] Masterlist lookup failed for table {table_name}: {exc}")
 
     return {}
+
+
+def count_public_tables() -> int | None:
+    """Count public base tables via direct PostgreSQL connection when available."""
+    db_url = resolve_db_url()
+    if not db_url:
+        return None
+    try:
+        with psycopg.connect(db_url, autocommit=True, prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
+                    """
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+    except Exception as exc:
+        print(f"[WARN] Could not count public tables: {exc}")
+        return None
+
+
+def get_table_column_count(table_name: str) -> int | None:
+    """Get column count for a specific public table using direct PostgreSQL connection."""
+    db_url = resolve_db_url()
+    if not db_url:
+        return None
+    try:
+        with psycopg.connect(db_url, autocommit=True, prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = %s;
+                    """,
+                    (table_name,),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+    except Exception as exc:
+        print(f"[WARN] Could not count columns for {table_name}: {exc}")
+        return None
+
+
+def resolve_stats_table_name(requested_table: str | None = None) -> List[str]:
+    """Build ordered table candidates for stats lookup."""
+    candidates = [
+        sanitize_identifier(requested_table, "table") if requested_table else None,
+        latest_loaded_table,
+        os.environ.get("DEFAULT_DATA_TABLE"),
+        "teradrip_datasets_hairstylist_datasets",
+        "teradrip_lab_report_2_datasets_hairstylist_dataset",
+    ]
+    result: List[str] = []
+    seen = set()
+    for raw in candidates:
+        if not raw:
+            continue
+        name = str(raw).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(name)
+    return result
 
 
 def records_from_dataframe(df: pd.DataFrame) -> List[Dict]:
@@ -480,6 +638,269 @@ def diagnose_load_issue(etl_output: str) -> str:
     return "ETL load failed. Inspect etl_log_tail for details."
 
 
+def process_saved_upload(saved_file: Path, safe_name: str) -> Dict[str, Any]:
+    """Process an already-saved CSV file through ETL steps."""
+    global pipeline_status, latest_loaded_table, latest_upload_time
+
+    load_warning = None
+    load_hint = None
+    etl_log_tail: List[str] = []
+
+    # Step 1: EXTRACT
+    pipeline_status["step"] = 1
+    pipeline_status["message"] = f"Extracting data from CSV: {saved_file.name}"
+    pipeline_status["error"] = None
+    persist_runtime_state()
+
+    raw_df = pd.read_csv(saved_file, low_memory=False)
+    pipeline_status["rows_processed"] = len(raw_df)
+    pipeline_status["columns"] = list(raw_df.columns)
+    persist_runtime_state()
+
+    # Step 2: TRANSFORM
+    pipeline_status["step"] = 2
+    pipeline_status["message"] = "Transforming and cleaning data..."
+    persist_runtime_state()
+
+    cleaned_df = clean_dataframe(raw_df)
+    if cleaned_df.empty:
+        raise ValueError("No data after cleaning")
+
+    # Step 3: LOAD
+    pipeline_status["step"] = 3
+    pipeline_status["message"] = "Running ETL script..."
+    persist_runtime_state()
+
+    table_name = sanitize_identifier(Path(safe_name).stem, "table")
+    clear_table_rows(table_name)
+
+    rc, etl_output = run_etl_script(saved_file, table_name)
+    if etl_output:
+        etl_log_tail = [line for line in etl_output.splitlines() if line.strip()][-15:]
+
+    has_etl_error = (rc != 0) or ("[ERROR]" in etl_output)
+    if has_etl_error:
+        load_warning = "ETL script finished with warnings/errors during load step."
+        load_hint = diagnose_load_issue(etl_output)
+        pipeline_status["message"] = "CSV saved and transformed, but warehouse load may have failed."
+        pipeline_status["error"] = (etl_log_tail[-1] if etl_log_tail else f"ETL exited with code {rc}")
+        print(f"[WARN] {load_warning}")
+        print(f"[HINT] {load_hint}")
+    else:
+        pipeline_status["message"] = f"Loaded {len(cleaned_df)} records to {table_name}"
+        print(f"[SUCCESS] Loaded {len(cleaned_df)} records to {table_name}")
+
+    # Step 4: WAREHOUSE
+    pipeline_status["step"] = 4
+    pipeline_status["message"] = "Data stored in warehouse successfully!"
+    pipeline_status["end_time"] = datetime.now().isoformat()
+    latest_loaded_table = table_name
+    latest_upload_time = pipeline_status["end_time"]
+    persist_runtime_state()
+
+    return {
+        "success": True,
+        "rows": len(cleaned_df),
+        "columns": list(cleaned_df.columns),
+        "table_name": table_name,
+        "latest_loaded_table": latest_loaded_table,
+        "saved_file": str(saved_file.relative_to(PROJECT_ROOT)),
+        "load_warning": load_warning,
+        "load_hint": load_hint,
+        "etl_log_tail": etl_log_tail,
+        "status": pipeline_status,
+    }
+
+
+def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the ML analysis core logic and return API response payload."""
+    global pipeline_status, latest_loaded_table
+
+    requested_table = payload.get("table_name")
+    source_table = latest_loaded_table or requested_table or "teradrip_datasets_hairstylist_datasets"
+    output_table = payload.get("output_table", "ml_recommendations")
+    limit = payload.get("limit")
+    refresh = bool(payload.get("refresh", True))
+
+    supabase = get_supabase()
+    final_record = None
+
+    if refresh:
+        engine = TeraDripMBAEngine(
+            source_table=source_table,
+            output_table=output_table,
+            max_loops=5,
+        )
+        run_result = engine.run(limit=limit, persist=True)
+        final_record = run_result.get("final") or {}
+    else:
+        latest = (
+            supabase.table(output_table)
+            .select("*")
+            .eq("source_table", source_table)
+            .order("generated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if latest.data:
+            final_record = latest.data[0]
+
+    if not final_record:
+        raise ValueError("No ML result found. Run with refresh=true first.")
+
+    ml_payload = parse_json_field(final_record.get("payload"))
+    metrics = parse_json_field(final_record.get("metrics"))
+    governance = parse_json_field(final_record.get("governance"))
+
+    historical_query = supabase.table(output_table).select("*").order("generated_at", desc=True).limit(60)
+    historical_response = historical_query.execute()
+    historical_rows = historical_response.data or []
+    analytics_comparison = build_analytics_comparison(final_record, historical_rows)
+
+    name_map = fetch_masterlist_map(
+        supabase,
+        masterlist_table=payload.get("masterlist_table") or os.environ.get("MASTERLIST_TABLE"),
+    )
+
+    top_bundles = []
+    for bundle in (ml_payload.get("top_bundles", []) or []):
+        mapped_bundle = dict(bundle)
+        mapped_bundle["items"] = map_item_list(bundle.get("items", []), name_map)
+        if "explanation" in mapped_bundle:
+            mapped_bundle["explanation"] = map_ids_in_text(mapped_bundle.get("explanation", ""), name_map)
+        top_bundles.append(mapped_bundle)
+
+    mapped_fbt_rows = []
+    for row in (ml_payload.get("frequently_bought_together", []) or []):
+        mapped_row = dict(row)
+        mapped_row["if_items"] = map_item_list(row.get("if_items", []), name_map)
+        mapped_row["then_items"] = map_item_list(row.get("then_items", []), name_map)
+        mapped_fbt_rows.append(mapped_row)
+
+    mapped_promos = []
+    for promo in (ml_payload.get("promo_recommendations", []) or []):
+        mapped_promo = dict(promo)
+        mapped_promo["trigger_items"] = map_item_list(promo.get("trigger_items", []), name_map)
+        mapped_promo["target_items"] = map_item_list(promo.get("target_items", []), name_map)
+        if "message" in mapped_promo:
+            mapped_promo["message"] = map_ids_in_text(mapped_promo.get("message", ""), name_map)
+        mapped_promos.append(mapped_promo)
+
+    mapped_cross_sell = {}
+    for base_item, suggestions in (ml_payload.get("cross_sell_suggestions", {}) or {}).items():
+        mapped_base = resolve_item_label(base_item, name_map)
+        mapped_cross_sell[mapped_base] = map_item_list(suggestions or [], name_map)
+
+    fbt_rows = mapped_fbt_rows
+    top_recommendations = []
+    for row in fbt_rows[:10]:
+        if_items = row.get("if_items", [])
+        then_items = row.get("then_items", [])
+        if_item = if_items[0] if if_items else "Item A"
+        then_item = then_items[0] if then_items else "Item B"
+        conf = float(row.get("confidence", 0.0)) * 100
+        top_recommendations.append(
+            {
+                "if_item": if_item,
+                "then_item": then_item,
+                "confidence": round(conf, 1),
+                "support": row.get("support", 0),
+            }
+        )
+
+    business_insights = [
+        map_ids_in_text(line, name_map)
+        for line in (ml_payload.get("business_insights", []) or [])
+    ]
+    insight_lines = [
+        {"text": f"> Insight: {line}", "type": "info"}
+        for line in business_insights[:3]
+    ]
+
+    pipeline_status["message"] = "ML analysis complete!"
+    persist_runtime_state()
+
+    return {
+        "success": True,
+        "run_id": final_record.get("run_id"),
+        "source_table": source_table,
+        "requested_table": requested_table,
+        "latest_loaded_table": latest_loaded_table,
+        "algorithm": metrics.get("algorithm"),
+        "total_records": int(metrics.get("basket_stats", {}).get("transactions", 0)),
+        "feature_columns": [],
+        "item_frequencies": {},
+        "recommendations": top_recommendations,
+        "top_bundles": top_bundles,
+        "frequently_bought_together": fbt_rows,
+        "cross_sell_suggestions": mapped_cross_sell,
+        "promo_recommendations": mapped_promos,
+        "business_insights": business_insights,
+        "governance": governance,
+        "analytics_comparison": analytics_comparison,
+        "logs": [
+            {"text": "> Connecting to Warehouse...", "type": "info"},
+            {"text": f"> Running Hybrid MBA on {source_table}...", "type": "info"},
+            {"text": f"> Algorithm: {metrics.get('algorithm', 'n/a')}", "type": "info"},
+            {
+                "text": (
+                    f"> Records: {int(metrics.get('basket_stats', {}).get('transactions', 0)):,}"
+                ),
+                "type": "info",
+            },
+            {"text": f"> Rules generated: {int(metrics.get('rule_count', 0)):,}", "type": "info"},
+            {
+                "text": (
+                    f"> Historical baselines: {int(analytics_comparison.get('historical_run_count', 0))} prior run(s)"
+                ),
+                "type": "info",
+            },
+            {"text": f"> Manual review flags: {len(governance.get('anomalies', []))}", "type": "warning"},
+            *insight_lines,
+            {"text": "âœ“ Analysis Complete!", "type": "success"},
+        ],
+    }
+
+
+def resume_pending_job_if_needed() -> None:
+    """Resume unfinished upload/ML work in a background thread after restart."""
+    global _resume_thread
+    if not isinstance(pending_job, dict):
+        return
+    if _resume_thread and _resume_thread.is_alive():
+        return
+
+    def _runner():
+        global pipeline_status
+        job = dict(pending_job or {})
+        kind = str(job.get("kind", "")).lower()
+        try:
+            if kind == "upload":
+                rel = job.get("saved_file")
+                safe_name = job.get("safe_name")
+                if not rel or not safe_name:
+                    return
+                csv_path = PROJECT_ROOT / str(rel)
+                if not csv_path.exists():
+                    pipeline_status["error"] = f"Cannot resume upload; file not found: {rel}"
+                    persist_runtime_state()
+                    return
+                print(f"[INFO] Resuming pending upload job for {csv_path.name}")
+                process_saved_upload(csv_path, str(safe_name))
+                set_pending_job(None)
+            elif kind == "ml":
+                payload = job.get("payload") or {}
+                print("[INFO] Resuming pending ML analysis job")
+                run_ml_analysis_core(dict(payload))
+                set_pending_job(None)
+        except Exception as exc:
+            pipeline_status["error"] = f"Resume failed: {exc}"
+            persist_runtime_state()
+
+    _resume_thread = threading.Thread(target=_runner, daemon=True, name="resume-pending-job")
+    _resume_thread.start()
+
+
 # ============ API ROUTES ============
 
 @app.route("/")
@@ -497,7 +918,7 @@ def get_status():
 @app.route("/api/upload", methods=["POST"])
 def upload_csv():
     """Upload and process a CSV file through the ETL pipeline."""
-    global pipeline_status, latest_loaded_table, latest_upload_time
+    global pipeline_status
     
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
@@ -515,10 +936,7 @@ def upload_csv():
         "start_time": datetime.now().isoformat(),
         "end_time": None
     }
-    load_warning = None
-    load_hint = None
-    etl_log_tail: List[str] = []
-    
+    persist_runtime_state()
     try:
         ETL_CSV_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -529,228 +947,53 @@ def upload_csv():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_file = ETL_CSV_DIR / f"{timestamp}_{safe_name}"
         file.save(saved_file)
-
-        # Step 1: EXTRACT
-        pipeline_status["step"] = 1
-        pipeline_status["message"] = f"Extracting data from CSV: {saved_file.name}"
-
-        # Read CSV
-        raw_df = pd.read_csv(saved_file, low_memory=False)
-        pipeline_status["rows_processed"] = len(raw_df)
-        pipeline_status["columns"] = list(raw_df.columns)
-        
-        # Step 2: TRANSFORM
-        pipeline_status["step"] = 2
-        pipeline_status["message"] = "Transforming and cleaning data..."
-        
-        cleaned_df = clean_dataframe(raw_df)
-        
-        if cleaned_df.empty:
-            return jsonify({"error": "No data after cleaning"}), 400
-        
-        # Step 3: LOAD
-        pipeline_status["step"] = 3
-        pipeline_status["message"] = "Running ETL script..."
-
-        # Use original uploaded filename for table naming to avoid timestamp-based table drift.
-        table_name = sanitize_identifier(Path(safe_name).stem, "table")
-
-        # Ensure a fresh dataset view for ML when the same table name is re-uploaded.
-        clear_table_rows(table_name)
-
-        rc, etl_output = run_etl_script(saved_file, table_name)
-        if etl_output:
-            etl_log_tail = [line for line in etl_output.splitlines() if line.strip()][-15:]
-
-        has_etl_error = (rc != 0) or ("[ERROR]" in etl_output)
-        if has_etl_error:
-            # Keep pipeline usable even when remote warehouse load fails.
-            load_warning = "ETL script finished with warnings/errors during load step."
-            load_hint = diagnose_load_issue(etl_output)
-            pipeline_status["message"] = "CSV saved and transformed, but warehouse load may have failed."
-            pipeline_status["error"] = (etl_log_tail[-1] if etl_log_tail else f"ETL exited with code {rc}")
-            print(f"[WARN] {load_warning}")
-            print(f"[HINT] {load_hint}")
-        else:
-            pipeline_status["message"] = f"Loaded {len(cleaned_df)} records to {table_name}"
-            print(f"[SUCCESS] Loaded {len(cleaned_df)} records to {table_name}")
-        
-        # Step 4: WAREHOUSE
-        pipeline_status["step"] = 4
-        pipeline_status["message"] = "Data stored in warehouse successfully!"
-        
-        pipeline_status["end_time"] = datetime.now().isoformat()
-        latest_loaded_table = table_name
-        latest_upload_time = pipeline_status["end_time"]
-        
-        return jsonify({
-            "success": True,
-            "rows": len(cleaned_df),
-            "columns": list(cleaned_df.columns),
-            "table_name": table_name,
-            "latest_loaded_table": latest_loaded_table,
-            "saved_file": str(saved_file.relative_to(PROJECT_ROOT)),
-            "load_warning": load_warning,
-            "load_hint": load_hint,
-            "etl_log_tail": etl_log_tail,
-            "status": pipeline_status
-        })
+        set_pending_job(
+            {
+                "kind": "upload",
+                "saved_file": str(saved_file.relative_to(PROJECT_ROOT)),
+                "safe_name": safe_name,
+                "created_at": datetime.now().isoformat(),
+            }
+        )
+        result = process_saved_upload(saved_file, safe_name)
+        set_pending_job(None)
+        return jsonify(result)
         
     except Exception as e:
         pipeline_status["error"] = str(e)
+        persist_runtime_state()
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/ml/analyze", methods=["POST"])
 def run_ml_analysis():
     """Run hybrid MBA analysis and return frontend-ready recommendations."""
-    global pipeline_status, latest_loaded_table
+    global pipeline_status
 
     pipeline_status["step"] = 5
     pipeline_status["message"] = "Running ML analysis..."
+    pipeline_status["error"] = None
+    persist_runtime_state()
 
     try:
         payload = request.get_json(silent=True) or {}
-        requested_table = payload.get("table_name")
-        source_table = latest_loaded_table or requested_table or "teradrip_datasets_hairstylist_datasets"
-        output_table = payload.get("output_table", "ml_recommendations")
-        limit = payload.get("limit")
-        refresh = bool(payload.get("refresh", True))
-
-        supabase = get_supabase()
-        final_record = None
-
-        if refresh:
-            engine = TeraDripMBAEngine(
-                source_table=source_table,
-                output_table=output_table,
-                max_loops=5,
-            )
-            run_result = engine.run(limit=limit, persist=True)
-            final_record = run_result.get("final") or {}
-        else:
-            latest = (
-                supabase.table(output_table)
-                .select("*")
-                .eq("source_table", source_table)
-                .order("generated_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if latest.data:
-                final_record = latest.data[0]
-
-        if not final_record:
-            return jsonify({"error": "No ML result found. Run with refresh=true first."}), 404
-
-        ml_payload = parse_json_field(final_record.get("payload"))
-        metrics = parse_json_field(final_record.get("metrics"))
-        governance = parse_json_field(final_record.get("governance"))
-
-        historical_query = supabase.table(output_table).select("*").order("generated_at", desc=True).limit(60)
-        historical_response = historical_query.execute()
-        historical_rows = historical_response.data or []
-        analytics_comparison = build_analytics_comparison(final_record, historical_rows)
-
-        name_map = fetch_masterlist_map(
-            supabase,
-            masterlist_table=payload.get("masterlist_table") or os.environ.get("MASTERLIST_TABLE"),
-        )
-
-        top_bundles = []
-        for bundle in (ml_payload.get("top_bundles", []) or []):
-            mapped_bundle = dict(bundle)
-            mapped_bundle["items"] = map_item_list(bundle.get("items", []), name_map)
-            top_bundles.append(mapped_bundle)
-
-        mapped_fbt_rows = []
-        for row in (ml_payload.get("frequently_bought_together", []) or []):
-            mapped_row = dict(row)
-            mapped_row["if_items"] = map_item_list(row.get("if_items", []), name_map)
-            mapped_row["then_items"] = map_item_list(row.get("then_items", []), name_map)
-            mapped_fbt_rows.append(mapped_row)
-
-        mapped_promos = []
-        for promo in (ml_payload.get("promo_recommendations", []) or []):
-            mapped_promo = dict(promo)
-            mapped_promo["trigger_items"] = map_item_list(promo.get("trigger_items", []), name_map)
-            mapped_promo["target_items"] = map_item_list(promo.get("target_items", []), name_map)
-            mapped_promos.append(mapped_promo)
-
-        mapped_cross_sell = {}
-        for base_item, suggestions in (ml_payload.get("cross_sell_suggestions", {}) or {}).items():
-            mapped_base = resolve_item_label(base_item, name_map)
-            mapped_cross_sell[mapped_base] = map_item_list(suggestions or [], name_map)
-
-        fbt_rows = mapped_fbt_rows
-        top_recommendations = []
-        for row in fbt_rows[:10]:
-            if_items = row.get("if_items", [])
-            then_items = row.get("then_items", [])
-            if_item = if_items[0] if if_items else "Item A"
-            then_item = then_items[0] if then_items else "Item B"
-            conf = float(row.get("confidence", 0.0)) * 100
-            top_recommendations.append(
-                {
-                    "if_item": if_item,
-                    "then_item": then_item,
-                    "confidence": round(conf, 1),
-                    "support": row.get("support", 0),
-                }
-            )
-
-        business_insights = ml_payload.get("business_insights", [])
-        insight_lines = [
-            {"text": f"> Insight: {line}", "type": "info"}
-            for line in business_insights[:3]
-        ]
-
-        pipeline_status["message"] = "ML analysis complete!"
-
-        return jsonify(
+        set_pending_job(
             {
-                "success": True,
-                "run_id": final_record.get("run_id"),
-                "source_table": source_table,
-                "requested_table": requested_table,
-                "latest_loaded_table": latest_loaded_table,
-                "algorithm": metrics.get("algorithm"),
-                "total_records": int(metrics.get("basket_stats", {}).get("transactions", 0)),
-                "feature_columns": [],
-                "item_frequencies": {},
-                "recommendations": top_recommendations,
-                "top_bundles": top_bundles,
-                "frequently_bought_together": fbt_rows,
-                "cross_sell_suggestions": mapped_cross_sell,
-                "promo_recommendations": mapped_promos,
-                "business_insights": business_insights,
-                "governance": governance,
-                "analytics_comparison": analytics_comparison,
-                "logs": [
-                    {"text": "> Connecting to Warehouse...", "type": "info"},
-                    {"text": f"> Running Hybrid MBA on {source_table}...", "type": "info"},
-                    {"text": f"> Algorithm: {metrics.get('algorithm', 'n/a')}", "type": "info"},
-                    {
-                        "text": (
-                            f"> Records: {int(metrics.get('basket_stats', {}).get('transactions', 0)):,}"
-                        ),
-                        "type": "info",
-                    },
-                    {"text": f"> Rules generated: {int(metrics.get('rule_count', 0)):,}", "type": "info"},
-                    {
-                        "text": (
-                            f"> Historical baselines: {int(analytics_comparison.get('historical_run_count', 0))} prior run(s)"
-                        ),
-                        "type": "info",
-                    },
-                    {"text": f"> Manual review flags: {len(governance.get('anomalies', []))}", "type": "warning"},
-                    *insight_lines,
-                    {"text": "✓ Analysis Complete!", "type": "success"},
-                ],
+                "kind": "ml",
+                "payload": payload,
+                "created_at": datetime.now().isoformat(),
             }
         )
-
+        result = run_ml_analysis_core(payload)
+        set_pending_job(None)
+        return jsonify(result)
+    except ValueError as e:
+        pipeline_status["error"] = str(e)
+        persist_runtime_state()
+        return jsonify({"error": str(e)}), 404
     except Exception as e:
+        pipeline_status["error"] = str(e)
+        persist_runtime_state()
         return jsonify({"error": str(e)}), 500
 
 
@@ -759,29 +1002,57 @@ def get_data_stats():
     """Get data statistics from the warehouse."""
     try:
         supabase = get_supabase()
-        
-        # Try to get stats from the hairstylist dataset
-        table_name = "teradrip_lab_report_2_datasets_hairstylist_dataset"
-        response = supabase.table(table_name).select("*", count="exact").execute()
-        
-        record_count = len(response.data) if response.data else 0
-        
-        # Count columns (transforms)
-        column_count = len(response.data[0].keys()) if response.data else 0
-        
-        return jsonify({
-            "records": record_count,
-            "transforms": column_count,
-            "tables": 1
-        })
+        requested_table = request.args.get("table_name")
+        target_table = None
+        probe_response = None
+        table_candidates = resolve_stats_table_name(requested_table)
+
+        for table_name in table_candidates:
+            try:
+                response = (
+                    supabase.table(table_name)
+                    .select("*", count="exact")
+                    .limit(1)
+                    .execute()
+                )
+                target_table = table_name
+                probe_response = response
+                break
+            except Exception:
+                continue
+
+        if not target_table or probe_response is None:
+            return jsonify(
+                {
+                    "records": 0,
+                    "transforms": 0,
+                    "tables": count_public_tables() or 0,
+                    "table_name": None,
+                    "table_found": False,
+                    "source": "database",
+                    "message": "No accessible dataset table was found for stats lookup.",
+                }
+            )
+
+        record_count = int(getattr(probe_response, "count", 0) or 0)
+        sample_rows = probe_response.data or []
+        column_count = len(sample_rows[0].keys()) if sample_rows else 0
+        if column_count == 0:
+            column_count = int(get_table_column_count(target_table) or 0)
+
+        tables_count = count_public_tables()
+        return jsonify(
+            {
+                "records": record_count,
+                "transforms": column_count,
+                "tables": int(tables_count if tables_count is not None else 1),
+                "table_name": target_table,
+                "table_found": True,
+                "source": "database",
+            }
+        )
     except Exception as e:
-        # Return placeholder stats
-        return jsonify({
-            "records": 1000,
-            "transforms": 20,
-            "tables": 1,
-            "simulated": True
-        })
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/health")
@@ -795,16 +1066,20 @@ def health_check():
 
 
 if __name__ == "__main__":
+    load_runtime_state()
     print("\n" + "=" * 50)
-    print("🚀 TeraDrip Salon Backend Starting...")
+    print("TeraDrip Salon Backend Starting...")
     print("=" * 50)
-    print(f"📁 Project Root: {PROJECT_ROOT}")
-    print(f"🌐 Frontend: {app.static_folder}")
-    print(f"💾 Supabase API: {'✓ Configured' if os.environ.get('SUPABASE_URL') else '✗ Not configured'}")
+    print(f"Project Root: {PROJECT_ROOT}")
+    print(f"Frontend: {app.static_folder}")
+    print(f"Supabase API: {'Configured' if os.environ.get('SUPABASE_URL') else 'Not configured'}")
     db_url = resolve_db_url()
-    print(f"🗄️  DB Direct: {'✓ Configured' if db_url else '✗ Not configured (table auto-creation disabled)'}")
+    print(f"DB Direct: {'Configured' if db_url else 'Not configured (table auto-creation disabled)'}")
+    if pending_job:
+        print(f"[RESUME] Pending job detected: {pending_job.get('kind', 'unknown')}")
     print("=" * 50)
-    print("🔗 Open http://localhost:5000 in your browser")
+    print("Open http://localhost:5000 in your browser")
     print("=" * 50 + "\n")
-    
-    app.run(debug=True, port=5000)
+
+    resume_pending_job_if_needed()
+    app.run(debug=True, port=5000, use_reloader=False)
