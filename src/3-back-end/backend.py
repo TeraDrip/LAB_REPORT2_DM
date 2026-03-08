@@ -248,6 +248,97 @@ def map_item_list(items: List[str], name_map: Dict[str, str]) -> List[str]:
     return [resolve_item_label(item, name_map) for item in (items or [])]
 
 
+def parse_json_field(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def build_run_snapshot(record: Dict) -> Dict:
+    payload = parse_json_field(record.get("payload"))
+    metrics = parse_json_field(record.get("metrics"))
+    fbt = payload.get("frequently_bought_together", []) or []
+    confidences = [float(row.get("confidence", 0.0) or 0.0) for row in fbt if isinstance(row, dict)]
+    avg_confidence = (sum(confidences) / len(confidences)) if confidences else 0.0
+    basket_stats = metrics.get("basket_stats", {}) or {}
+
+    return {
+        "run_id": record.get("run_id"),
+        "source_table": record.get("source_table"),
+        "generated_at": record.get("generated_at"),
+        "transactions": int(basket_stats.get("transactions", 0) or 0),
+        "rule_count": int(metrics.get("rule_count", 0) or 0),
+        "bundle_count": len(payload.get("top_bundles", []) or []),
+        "fbt_count": len(fbt),
+        "promo_count": len(payload.get("promo_recommendations", []) or []),
+        "avg_confidence": round(avg_confidence, 4),
+    }
+
+
+def pct_delta(latest_value: float, baseline_value: float) -> float | None:
+    if baseline_value == 0:
+        return None
+    return round(((latest_value - baseline_value) / baseline_value) * 100.0, 2)
+
+
+def build_analytics_comparison(latest_record: Dict, historical_rows: List[Dict]) -> Dict:
+    snapshots = [build_run_snapshot(row) for row in historical_rows]
+    latest_snapshot = build_run_snapshot(latest_record)
+    latest_run_id = latest_snapshot.get("run_id")
+
+    prior = [s for s in snapshots if s.get("run_id") and s.get("run_id") != latest_run_id]
+    if not prior:
+        prior = [s for s in snapshots if s.get("run_id") != latest_run_id]
+
+    def avg(metric: str) -> float:
+        if not prior:
+            return 0.0
+        return sum(float(s.get(metric, 0) or 0) for s in prior) / len(prior)
+
+    baseline = {
+        "transactions": round(avg("transactions"), 2),
+        "rule_count": round(avg("rule_count"), 2),
+        "bundle_count": round(avg("bundle_count"), 2),
+        "promo_count": round(avg("promo_count"), 2),
+        "avg_confidence": round(avg("avg_confidence"), 4),
+    }
+
+    deltas = {
+        "transactions": {
+            "absolute": latest_snapshot["transactions"] - baseline["transactions"],
+            "percent": pct_delta(float(latest_snapshot["transactions"]), float(baseline["transactions"])),
+        },
+        "rule_count": {
+            "absolute": latest_snapshot["rule_count"] - baseline["rule_count"],
+            "percent": pct_delta(float(latest_snapshot["rule_count"]), float(baseline["rule_count"])),
+        },
+        "bundle_count": {
+            "absolute": latest_snapshot["bundle_count"] - baseline["bundle_count"],
+            "percent": pct_delta(float(latest_snapshot["bundle_count"]), float(baseline["bundle_count"])),
+        },
+        "promo_count": {
+            "absolute": latest_snapshot["promo_count"] - baseline["promo_count"],
+            "percent": pct_delta(float(latest_snapshot["promo_count"]), float(baseline["promo_count"])),
+        },
+        "avg_confidence": {
+            "absolute": round(latest_snapshot["avg_confidence"] - baseline["avg_confidence"], 4),
+            "percent": pct_delta(float(latest_snapshot["avg_confidence"]), float(baseline["avg_confidence"])),
+        },
+    }
+
+    trend = sorted(snapshots, key=lambda row: str(row.get("generated_at") or ""))[-8:]
+    return {
+        "latest": latest_snapshot,
+        "historical_run_count": len(prior),
+        "historical_baseline": baseline,
+        "deltas": deltas,
+        "recent_trend": trend,
+    }
+
+
 def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[str, str]:
     """Fetch ID -> human-readable name map from a Supabase masterlist table."""
     configured = masterlist_table or os.environ.get("MASTERLIST_TABLE")
@@ -552,16 +643,14 @@ def run_ml_analysis():
         if not final_record:
             return jsonify({"error": "No ML result found. Run with refresh=true first."}), 404
 
-        ml_payload = final_record.get("payload", {})
-        metrics = final_record.get("metrics", {})
-        governance = final_record.get("governance", {})
+        ml_payload = parse_json_field(final_record.get("payload"))
+        metrics = parse_json_field(final_record.get("metrics"))
+        governance = parse_json_field(final_record.get("governance"))
 
-        if isinstance(ml_payload, str):
-            ml_payload = json.loads(ml_payload)
-        if isinstance(metrics, str):
-            metrics = json.loads(metrics)
-        if isinstance(governance, str):
-            governance = json.loads(governance)
+        historical_query = supabase.table(output_table).select("*").order("generated_at", desc=True).limit(60)
+        historical_response = historical_query.execute()
+        historical_rows = historical_response.data or []
+        analytics_comparison = build_analytics_comparison(final_record, historical_rows)
 
         name_map = fetch_masterlist_map(
             supabase,
@@ -636,6 +725,7 @@ def run_ml_analysis():
                 "promo_recommendations": mapped_promos,
                 "business_insights": business_insights,
                 "governance": governance,
+                "analytics_comparison": analytics_comparison,
                 "logs": [
                     {"text": "> Connecting to Warehouse...", "type": "info"},
                     {"text": f"> Running Hybrid MBA on {source_table}...", "type": "info"},
@@ -647,6 +737,12 @@ def run_ml_analysis():
                         "type": "info",
                     },
                     {"text": f"> Rules generated: {int(metrics.get('rule_count', 0)):,}", "type": "info"},
+                    {
+                        "text": (
+                            f"> Historical baselines: {int(analytics_comparison.get('historical_run_count', 0))} prior run(s)"
+                        ),
+                        "type": "info",
+                    },
                     {"text": f"> Manual review flags: {len(governance.get('anomalies', []))}", "type": "warning"},
                     *insight_lines,
                     {"text": "✓ Analysis Complete!", "type": "success"},

@@ -883,6 +883,78 @@
             border-radius: 999px;
             background: linear-gradient(90deg, var(--accent-primary), var(--accent-cyan));
         }
+
+        .analytics-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            margin: 14px 0;
+        }
+
+        .kpi-card {
+            border: 1px solid var(--glass-border);
+            border-radius: var(--border-radius-xs);
+            background: rgba(255, 255, 255, 0.45);
+            padding: 12px;
+        }
+
+        .kpi-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+        .kpi-value { font-size: 21px; font-weight: 700; color: var(--text-primary); margin-top: 4px; }
+        .kpi-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+        .kpi-delta { font-size: 12px; font-weight: 700; margin-top: 6px; }
+        .kpi-delta.up { color: #15803d; }
+        .kpi-delta.down { color: #b91c1c; }
+        .kpi-delta.neutral { color: var(--text-muted); }
+
+        .analytics-trend {
+            border: 1px solid var(--glass-border);
+            border-radius: var(--border-radius-xs);
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .trend-bars {
+            height: 180px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+            gap: 8px;
+            align-items: end;
+            margin-top: 8px;
+        }
+
+        .trend-bar {
+            position: relative;
+            background: linear-gradient(180deg, rgba(167,139,250,0.85), rgba(103,232,249,0.85));
+            border-radius: 10px 10px 6px 6px;
+            min-height: 10px;
+        }
+
+        .trend-bar.latest {
+            background: linear-gradient(180deg, #22c55e, #16a34a);
+            box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+        }
+
+        .trend-meta {
+            margin-top: 6px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+            gap: 8px;
+            font-size: 10px;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        .analytics-recommendations {
+            border: 1px solid var(--glass-border);
+            border-radius: var(--border-radius-xs);
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.4);
+            margin-top: 14px;
+        }
+
+        @media (max-width: 1024px) {
+            .analytics-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
     </style>
 </head>
 <body>
@@ -1072,20 +1144,20 @@
             <!-- Analytics Tab -->
             <div id="tab-analytics" class="tab-panel" style="display:none;">
                 <div class="card" style="padding: 24px;">
-                    <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">📈 Business Insights</div>
-                    <div id="insightsContainer" style="font-size: 14px; line-height: 1.6;">Run your ETL + ML pipeline to populate insights.</div>
-                    <div class="graph-grid">
-                        <div class="graph-card">
-                            <div class="widget-title">Bundle Support Distribution</div>
-                            <div id="bundleSupportGraph"></div>
-                        </div>
-                        <div class="graph-card">
-                            <div class="widget-title">Rule Confidence Distribution</div>
-                            <div id="ruleConfidenceGraph"></div>
-                        </div>
+                    <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">📈 Historical vs Latest Dataset Analysis</div>
+                    <div id="analyticsSummary" style="font-size: 14px; line-height: 1.6;">Run ETL + ML to compare the latest dataset against historical Supabase runs.</div>
+
+                    <div id="analyticsKpiGrid" class="analytics-kpi-grid"></div>
+
+                    <div class="analytics-trend">
+                        <div class="widget-title">Rule Generation Trend Across Datasets (latest highlighted)</div>
+                        <div id="analyticsTrendChart"></div>
                     </div>
-                    <div style="font-size: 16px; font-weight: 600; color: var(--text-dark); margin-top: 18px; margin-bottom: 8px;">🛡 Governance Flags</div>
-                    <div id="governanceContainer" style="font-size: 13px; line-height: 1.5;">No governance data yet.</div>
+
+                    <div class="analytics-recommendations">
+                        <div class="widget-title">Predicted Outcome and Business Recommendations</div>
+                        <div id="analyticsRecommendations" style="font-size: 13px; line-height: 1.5;">No recommendation summary yet.</div>
+                    </div>
                 </div>
             </div>
 
@@ -1437,6 +1509,7 @@
                         el.innerHTML = '<div class="event light"><div class="event-desc">No recommendations available. Run ETL then retry ML.</div></div>';
                     }
                 });
+                renderAnalyticsComparison(null, {});
             }
         }
 
@@ -1490,20 +1563,110 @@
             }).join('');
         }
 
+        function shortName(text, maxLen = 14) {
+            const value = String(text || 'dataset');
+            if (value.length <= maxLen) return value;
+            return value.slice(0, maxLen - 1) + '...';
+        }
+
+        function signedDeltaText(delta) {
+            if (!delta || (delta.absolute === 0 && delta.percent === 0)) return 'No change vs historical';
+            const abs = Number(delta.absolute || 0);
+            const sign = abs > 0 ? '+' : '';
+            if (delta.percent === null || delta.percent === undefined) return `${sign}${abs.toLocaleString()} vs baseline`;
+            const pct = Number(delta.percent || 0);
+            const pctSign = pct > 0 ? '+' : '';
+            return `${sign}${abs.toLocaleString()} (${pctSign}${pct.toFixed(1)}%) vs baseline`;
+        }
+
+        function deltaClass(delta) {
+            if (!delta || Number(delta.absolute || 0) === 0) return 'neutral';
+            return Number(delta.absolute || 0) > 0 ? 'up' : 'down';
+        }
+
+        function renderTrendBars(containerId, trendRows, latestRunId) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!Array.isArray(trendRows) || trendRows.length === 0) {
+                container.innerHTML = '<div class="event light"><div class="event-desc">No historical trend available yet.</div></div>';
+                return;
+            }
+
+            const maxRules = Math.max(...trendRows.map(r => Number(r.rule_count || 0)), 1);
+            const bars = trendRows.map((row) => {
+                const rules = Number(row.rule_count || 0);
+                const height = Math.max(8, Math.round((rules / maxRules) * 100));
+                const isLatest = String(row.run_id || '') === String(latestRunId || '');
+                const confPct = (Number(row.avg_confidence || 0) * 100).toFixed(1);
+                const title = `${row.source_table || 'dataset'} | rules=${rules} | avg_conf=${confPct}%`;
+                return `<div class="trend-bar ${isLatest ? 'latest' : ''}" style="height:${height}%;" title="${title}"></div>`;
+            }).join('');
+
+            const labels = trendRows.map((row) => `<div title="${row.source_table || 'dataset'}">${shortName(row.source_table || 'dataset', 12)}</div>`).join('');
+            container.innerHTML = `<div class="trend-bars">${bars}</div><div class="trend-meta">${labels}</div>`;
+        }
+
+        function renderAnalyticsComparison(comparison, result) {
+            const summaryEl = document.getElementById('analyticsSummary');
+            const kpiGridEl = document.getElementById('analyticsKpiGrid');
+            const recEl = document.getElementById('analyticsRecommendations');
+            if (!summaryEl || !kpiGridEl || !recEl) return;
+
+            if (!comparison || !comparison.latest) {
+                summaryEl.textContent = 'Run ETL + ML to compare the latest dataset against historical Supabase runs.';
+                kpiGridEl.innerHTML = '';
+                renderTrendBars('analyticsTrendChart', [], null);
+                recEl.innerHTML = 'No recommendation summary yet.';
+                return;
+            }
+
+            const latest = comparison.latest || {};
+            const baseline = comparison.historical_baseline || {};
+            const deltas = comparison.deltas || {};
+            const historyCount = Number(comparison.historical_run_count || 0);
+
+            summaryEl.textContent = `Latest dataset "${latest.source_table || 'n/a'}" compared against ${historyCount} historical run(s).`;
+
+            const kpis = [
+                { key: 'transactions', title: 'Transactions', format: (v) => Number(v || 0).toLocaleString() },
+                { key: 'rule_count', title: 'Rules Generated', format: (v) => Number(v || 0).toLocaleString() },
+                { key: 'avg_confidence', title: 'Avg Confidence', format: (v) => `${(Number(v || 0) * 100).toFixed(1)}%` },
+                { key: 'promo_count', title: 'Promo Suggestions', format: (v) => Number(v || 0).toLocaleString() },
+            ];
+
+            kpiGridEl.innerHTML = kpis.map((kpi) => {
+                const delta = deltas[kpi.key] || {};
+                return `
+                    <div class="kpi-card">
+                        <div class="kpi-title">${kpi.title}</div>
+                        <div class="kpi-value">${kpi.format(latest[kpi.key])}</div>
+                        <div class="kpi-sub">Historical avg: ${kpi.format(baseline[kpi.key])}</div>
+                        <div class="kpi-delta ${deltaClass(delta)}">${signedDeltaText(delta)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            renderTrendBars('analyticsTrendChart', comparison.recent_trend || [], latest.run_id);
+
+            const insights = Array.isArray(result.business_insights) ? result.business_insights : [];
+            const promos = Array.isArray(result.promo_recommendations) ? result.promo_recommendations : [];
+            const recommendationLines = [];
+            if (insights.length > 0) recommendationLines.push(...insights.slice(0, 3).map((text) => `• ${text}`));
+            if (promos.length > 0) recommendationLines.push(`• Priority promo: ${promos[0].message || 'Bundle discount on high-confidence pairs.'}`);
+            if (recommendationLines.length === 0) recommendationLines.push('• No ML business recommendation returned for this run.');
+            recEl.innerHTML = recommendationLines.map((line) => `<div style="margin-bottom: 6px;">${line}</div>`).join('');
+        }
+
         function renderMLWidgets(result) {
             const bundlesContainer = document.getElementById('topBundlesContainer');
             const fbtContainer = document.getElementById('fbtContainer');
             const promoContainer = document.getElementById('promoContainer');
             const crossSellContainer = document.getElementById('crossSellContainer');
-            const insightsContainer = document.getElementById('insightsContainer');
-            const governanceContainer = document.getElementById('governanceContainer');
             if (!bundlesContainer || !fbtContainer || !promoContainer || !crossSellContainer) return;
 
             const topBundles = Array.isArray(result.top_bundles) ? result.top_bundles : [];
             const fbt = Array.isArray(result.frequently_bought_together) ? result.frequently_bought_together : [];
             const promos = Array.isArray(result.promo_recommendations) ? result.promo_recommendations : [];
-            const insights = Array.isArray(result.business_insights) ? result.business_insights : [];
-            const governance = result.governance || {};
             const crossSell = result.cross_sell_suggestions || {};
 
             const bundleCards = topBundles.slice(0, 4).map((bundle, i) => {
@@ -1549,36 +1712,7 @@
                 ? `<div class="event light"><div class="event-desc">${crossSellEntries.map(([k, v]) => `${k} -> ${(v || []).slice(0, 3).join(', ')}`).join(' | ')}</div></div>`
                 : '<div class="event light"><div class="event-desc">No cross-sell map available yet.</div></div>';
 
-            if (insightsContainer) {
-                insightsContainer.innerHTML = insights.length > 0
-                    ? insights.slice(0, 4).map(text => `<div style="margin-bottom: 8px;">• ${text}</div>`).join('')
-                    : 'No business insights generated yet.';
-            }
-
-            if (governanceContainer) {
-                const anomalies = Array.isArray(governance.anomalies) ? governance.anomalies : [];
-                governanceContainer.innerHTML = anomalies.length > 0
-                    ? anomalies.slice(0, 4).map(a => `<div style="margin-bottom: 6px; color:#b91c1c;">• ${a.rule_key || 'rule'} (${a.reason || 'flag'})</div>`).join('')
-                    : '<span style="color:#16a34a;">No anomalies flagged.</span>';
-            }
-
-            renderBarGraph(
-                'bundleSupportGraph',
-                topBundles.slice(0, 6).map((b) => ({
-                    label: (b.items || []).slice(0, 2).join(' + ') || 'bundle',
-                    value: Number(b.support || 0),
-                    display: `${Math.round(Number(b.support || 0) * 1000) / 10}%`,
-                }))
-            );
-
-            renderBarGraph(
-                'ruleConfidenceGraph',
-                fbt.slice(0, 6).map((r) => ({
-                    label: `${(r.if_items || []).slice(0, 1).join(', ')} -> ${(r.then_items || []).slice(0, 1).join(', ')}`,
-                    value: Number(r.confidence || 0),
-                    display: `${Math.round(Number(r.confidence || 0) * 1000) / 10}%`,
-                }))
-            );
+            renderAnalyticsComparison(result.analytics_comparison, result);
         }
 
         async function fetchDataStats() {
