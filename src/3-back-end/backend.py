@@ -308,6 +308,69 @@ def map_ids_in_text(text: str, name_map: Dict[str, str]) -> str:
     return pattern.sub(lambda m: resolve_item_label(m.group(0), name_map), raw)
 
 
+def parse_price_value(raw_value: Any) -> float | None:
+    """Parse price-like values (numbers or currency strings) into float."""
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool):
+        return None
+    if isinstance(raw_value, (int, float)):
+        if pd.isna(raw_value):
+            return None
+        value = float(raw_value)
+        return value if value >= 0 else None
+
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    cleaned = text.replace(",", "")
+    cleaned = re.sub(r"[^0-9.\-]", "", cleaned)
+    if cleaned in {"", ".", "-", "-."}:
+        return None
+    try:
+        value = float(cleaned)
+        return value if value >= 0 else None
+    except Exception:
+        return None
+
+
+def normalize_price_lookup_key(raw_value: Any) -> str:
+    """Normalize IDs/names to a stable lookup key for price matching."""
+    value = str(raw_value or "").strip().upper()
+    if not value:
+        return ""
+    # Canonical form: treat separators/punctuation equally so tokens like
+    # "disposable_cape", "Disposable Cape", and "Disposable/Cape" all match.
+    value = re.sub(r"[^A-Z0-9]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def summarize_item_prices(item_ids: List[str], price_map: Dict[str, float]) -> Tuple[float, int, int]:
+    """Return subtotal and availability stats for a list of item IDs."""
+    subtotal = 0.0
+    priced_count = 0
+    missing_count = 0
+    for item in item_ids or []:
+        key = normalize_price_lookup_key(item)
+        price = price_map.get(key)
+        if isinstance(price, (int, float)) and price >= 0:
+            subtotal += float(price)
+            priced_count += 1
+        else:
+            missing_count += 1
+    return round(subtotal, 2), priced_count, missing_count
+
+
+def suggest_discount_pct(confidence: float = 0.0, lift: float = 1.0, item_count: int = 2) -> float:
+    """Heuristic discount suggestion bounded to practical promo values."""
+    conf = max(0.0, min(1.0, float(confidence or 0.0)))
+    lift_score = max(0.0, min(1.0, (float(lift or 1.0) - 1.0) / 2.0))
+    size_bonus = max(0.0, min(0.06, (max(2, int(item_count or 2)) - 2) * 0.015))
+    discount = 0.05 + (conf * 0.08) + (lift_score * 0.06) + size_bonus
+    return round(max(0.05, min(0.22, discount)), 4)
+
+
 def parse_json_field(value):
     if isinstance(value, str):
         try:
@@ -399,8 +462,8 @@ def build_analytics_comparison(latest_record: Dict, historical_rows: List[Dict])
     }
 
 
-def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[str, str]:
-    """Fetch ID -> human-readable name map from a Supabase masterlist table."""
+def fetch_masterlist_details(supabase, masterlist_table: str | None = None) -> Tuple[Dict[str, str], Dict[str, float]]:
+    """Fetch ID -> name and ID -> price maps from a Supabase masterlist table."""
     configured = masterlist_table or os.environ.get("MASTERLIST_TABLE")
     table_candidates = [
         configured,
@@ -433,6 +496,20 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
         "display_name",
         "description",
     ]
+    price_candidates = [
+        "price",
+        "item_price",
+        "service_price",
+        "unit_price",
+        "selling_price",
+        "srp",
+        "amount",
+        "rate",
+        "cost",
+    ]
+
+    aggregated_name_map: Dict[str, str] = {}
+    aggregated_price_map: Dict[str, float] = {}
 
     for table_name in table_candidates:
         try:
@@ -471,7 +548,22 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
             if not id_col or not name_col:
                 continue
 
-            mapping = {}
+            price_col = next((key_lookup[c] for c in price_candidates if c in key_lookup), None)
+            if not price_col:
+                price_col = next(
+                    (
+                        orig
+                        for lower, orig in key_lookup.items()
+                        if "price" in lower
+                        or "amount" in lower
+                        or "cost" in lower
+                        or lower.endswith("_rate")
+                    ),
+                    None,
+                )
+
+            name_map: Dict[str, str] = {}
+            price_map: Dict[str, float] = {}
             for row in rows:
                 raw_id = row.get(id_col)
                 raw_name = row.get(name_col)
@@ -480,15 +572,42 @@ def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[
                 key = str(raw_id).strip().upper()
                 value = str(raw_name).strip()
                 if key and value:
-                    mapping[key] = value
+                    name_map[key] = value
 
-            if mapping:
-                print(f"[INFO] Loaded masterlist map from {table_name} ({len(mapping)} items)")
-                return mapping
+                if key and price_col:
+                    parsed_price = parse_price_value(row.get(price_col))
+                    if parsed_price is not None:
+                        price_map[key] = round(parsed_price, 2)
+
+            if name_map:
+                print(
+                    f"[INFO] Loaded masterlist details from {table_name} "
+                    f"({len(name_map)} names, {len(price_map)} prices)"
+                )
+
+                # Merge names first-seen to preserve primary labeling source.
+                for key, value in name_map.items():
+                    aggregated_name_map.setdefault(key, value)
+
+                # Merge prices with latest non-null value taking precedence.
+                for key, value in price_map.items():
+                    aggregated_price_map[key] = value
         except Exception as exc:
             print(f"[WARN] Masterlist lookup failed for table {table_name}: {exc}")
 
-    return {}
+    if aggregated_name_map:
+        print(
+            "[INFO] Masterlist aggregate coverage: "
+            f"{len(aggregated_name_map)} names, {len(aggregated_price_map)} prices"
+        )
+
+    return aggregated_name_map, aggregated_price_map
+
+
+def fetch_masterlist_map(supabase, masterlist_table: str | None = None) -> Dict[str, str]:
+    """Backward-compatible wrapper returning only the name map."""
+    name_map, _price_map = fetch_masterlist_details(supabase, masterlist_table=masterlist_table)
+    return name_map
 
 
 def count_public_tables() -> int | None:
@@ -534,6 +653,97 @@ def get_table_column_count(table_name: str) -> int | None:
     except Exception as exc:
         print(f"[WARN] Could not count columns for {table_name}: {exc}")
         return None
+
+
+def get_public_table_columns_map() -> Dict[str, List[str]]:
+    """Return public table -> ordered column names map using direct PostgreSQL metadata."""
+    db_url = resolve_db_url()
+    if not db_url:
+        return {}
+
+    try:
+        with psycopg.connect(db_url, autocommit=True, prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name, ordinal_position;
+                    """
+                )
+                rows = cur.fetchall()
+
+        table_map: Dict[str, List[str]] = {}
+        for table_name, column_name in rows:
+            key = str(table_name)
+            table_map.setdefault(key, []).append(str(column_name))
+        return table_map
+    except Exception as exc:
+        print(f"[WARN] Could not read public table columns: {exc}")
+        return {}
+
+
+def get_table_row_count(table_name: str) -> int | None:
+    """Return row count for a public table when direct DB access is available."""
+    db_url = resolve_db_url()
+    if not db_url:
+        return None
+
+    try:
+        with psycopg.connect(db_url, autocommit=True, prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'SELECT COUNT(*) FROM public."{table_name}";')
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+    except Exception:
+        return None
+
+
+def resolve_existing_table_for_columns(cleaned_columns: List[str], preferred_table: str | None = None) -> str | None:
+    """Find an existing table with exactly the same column set for append-style uploads."""
+    target_cols = [sanitize_identifier(col, "column") for col in cleaned_columns]
+    target_set = set(target_cols)
+    if not target_set:
+        return None
+
+    table_map = get_public_table_columns_map()
+    if not table_map:
+        return None
+
+    excluded_tables = {
+        "ml_recommendations",
+        sanitize_identifier(os.environ.get("MASTERLIST_TABLE") or "", "table"),
+        "masterlist",
+        "price_masterlist",
+        "price_list",
+        "item_masterlist",
+        "service_masterlist",
+        "products",
+        "services",
+    }
+
+    exact_matches = []
+    for table_name, columns in table_map.items():
+        if table_name in excluded_tables:
+            continue
+        if set(columns) == target_set:
+            exact_matches.append(table_name)
+
+    if not exact_matches:
+        return None
+
+    if preferred_table and preferred_table in exact_matches:
+        return preferred_table
+
+    # Prefer the table with the most rows so equivalent uploads converge into one canonical table.
+    ranked = []
+    for table_name in exact_matches:
+        row_count = get_table_row_count(table_name)
+        ranked.append((table_name, -1 if row_count is None else row_count))
+
+    ranked.sort(key=lambda pair: (pair[1], pair[0]), reverse=True)
+    return ranked[0][0]
 
 
 def resolve_stats_table_name(requested_table: str | None = None) -> List[str]:
@@ -666,13 +876,18 @@ def process_saved_upload(saved_file: Path, safe_name: str) -> Dict[str, Any]:
     if cleaned_df.empty:
         raise ValueError("No data after cleaning")
 
+    filename_table_name = sanitize_identifier(Path(safe_name).stem, "table")
+    matched_table_name = resolve_existing_table_for_columns(
+        list(cleaned_df.columns),
+        preferred_table=latest_loaded_table,
+    )
+    table_name = matched_table_name or filename_table_name
+    append_mode = matched_table_name is not None
+
     # Step 3: LOAD
     pipeline_status["step"] = 3
     pipeline_status["message"] = "Running ETL script..."
     persist_runtime_state()
-
-    table_name = sanitize_identifier(Path(safe_name).stem, "table")
-    clear_table_rows(table_name)
 
     rc, etl_output = run_etl_script(saved_file, table_name)
     if etl_output:
@@ -687,8 +902,12 @@ def process_saved_upload(saved_file: Path, safe_name: str) -> Dict[str, Any]:
         print(f"[WARN] {load_warning}")
         print(f"[HINT] {load_hint}")
     else:
-        pipeline_status["message"] = f"Loaded {len(cleaned_df)} records to {table_name}"
-        print(f"[SUCCESS] Loaded {len(cleaned_df)} records to {table_name}")
+        if append_mode:
+            pipeline_status["message"] = f"Appended {len(cleaned_df)} records to {table_name}"
+            print(f"[SUCCESS] Appended {len(cleaned_df)} records to existing table {table_name}")
+        else:
+            pipeline_status["message"] = f"Loaded {len(cleaned_df)} records to {table_name}"
+            print(f"[SUCCESS] Loaded {len(cleaned_df)} records to new table {table_name}")
 
     # Step 4: WAREHOUSE
     pipeline_status["step"] = 4
@@ -703,6 +922,12 @@ def process_saved_upload(saved_file: Path, safe_name: str) -> Dict[str, Any]:
         "rows": len(cleaned_df),
         "columns": list(cleaned_df.columns),
         "table_name": table_name,
+        "table_resolution": {
+            "mode": "append_existing" if append_mode else "new_table",
+            "filename_table": filename_table_name,
+            "resolved_table": table_name,
+            "matched_by_schema": bool(append_mode),
+        },
         "latest_loaded_table": latest_loaded_table,
         "saved_file": str(saved_file.relative_to(PROJECT_ROOT)),
         "load_warning": load_warning,
@@ -744,6 +969,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         if latest.data:
             final_record = latest.data[0]
+            run_id = final_record.get("run_id")
 
     if not final_record:
         raise ValueError("No ML result found. Run with refresh=true first.")
@@ -757,39 +983,143 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
     historical_rows = historical_response.data or []
     analytics_comparison = build_analytics_comparison(final_record, historical_rows)
 
-    name_map = fetch_masterlist_map(
+    name_map, price_map = fetch_masterlist_details(
         supabase,
         masterlist_table=payload.get("masterlist_table") or os.environ.get("MASTERLIST_TABLE"),
     )
+    price_lookup = {normalize_price_lookup_key(k): float(v) for k, v in (price_map or {}).items()}
+    for item_id, item_name in (name_map or {}).items():
+        key = normalize_price_lookup_key(item_id)
+        label_key = normalize_price_lookup_key(item_name)
+        if key in price_lookup and label_key:
+            price_lookup[label_key] = price_lookup[key]
+
+    price_coverage = {
+        "named_items": len(name_map),
+        "priced_items": len(price_map),
+    }
 
     top_bundles = []
     for bundle in (ml_payload.get("top_bundles", []) or []):
         mapped_bundle = dict(bundle)
-        mapped_bundle["items"] = map_item_list(bundle.get("items", []), name_map)
+        raw_items = bundle.get("items", []) or []
+        mapped_bundle["items"] = map_item_list(raw_items, name_map)
         if "explanation" in mapped_bundle:
             mapped_bundle["explanation"] = map_ids_in_text(mapped_bundle.get("explanation", ""), name_map)
+
+        subtotal, priced_count, missing_count = summarize_item_prices(raw_items, price_lookup)
+        discount_pct = suggest_discount_pct(confidence=0.0, lift=1.0 + float(bundle.get("support", 0.0) or 0.0), item_count=len(raw_items))
+        savings = round(subtotal * discount_pct, 2) if subtotal > 0 else 0.0
+        discounted = round(max(0.0, subtotal - savings), 2) if subtotal > 0 else 0.0
+        mapped_bundle["pricing"] = {
+            "subtotal": subtotal,
+            "discount_pct": discount_pct,
+            "discount_amount": savings,
+            "discounted_total": discounted,
+            "priced_items": priced_count,
+            "missing_prices": missing_count,
+        }
         top_bundles.append(mapped_bundle)
 
     mapped_fbt_rows = []
     for row in (ml_payload.get("frequently_bought_together", []) or []):
         mapped_row = dict(row)
-        mapped_row["if_items"] = map_item_list(row.get("if_items", []), name_map)
-        mapped_row["then_items"] = map_item_list(row.get("then_items", []), name_map)
+        raw_if_items = row.get("if_items", []) or []
+        raw_then_items = row.get("then_items", []) or []
+        mapped_row["if_items"] = map_item_list(raw_if_items, name_map)
+        mapped_row["then_items"] = map_item_list(raw_then_items, name_map)
+
+        if_subtotal, if_priced_count, if_missing_count = summarize_item_prices(raw_if_items, price_lookup)
+        then_subtotal, then_priced_count, then_missing_count = summarize_item_prices(raw_then_items, price_lookup)
+        combined_subtotal = round(if_subtotal + then_subtotal, 2)
+        discount_pct = suggest_discount_pct(
+            confidence=float(row.get("confidence", 0.0) or 0.0),
+            lift=float(row.get("lift", 1.0) or 1.0),
+            item_count=len(raw_if_items) + len(raw_then_items),
+        )
+        discount_amount = round(combined_subtotal * discount_pct, 2) if combined_subtotal > 0 else 0.0
+        discounted_total = round(max(0.0, combined_subtotal - discount_amount), 2) if combined_subtotal > 0 else 0.0
+        mapped_row["pricing"] = {
+            "if_subtotal": if_subtotal,
+            "then_subtotal": then_subtotal,
+            "combined_subtotal": combined_subtotal,
+            "discount_pct": discount_pct,
+            "discount_amount": discount_amount,
+            "discounted_total": discounted_total,
+            "priced_items": if_priced_count + then_priced_count,
+            "missing_prices": if_missing_count + then_missing_count,
+        }
         mapped_fbt_rows.append(mapped_row)
 
     mapped_promos = []
     for promo in (ml_payload.get("promo_recommendations", []) or []):
         mapped_promo = dict(promo)
-        mapped_promo["trigger_items"] = map_item_list(promo.get("trigger_items", []), name_map)
-        mapped_promo["target_items"] = map_item_list(promo.get("target_items", []), name_map)
+        raw_trigger_items = promo.get("trigger_items", []) or []
+        raw_target_items = promo.get("target_items", []) or []
+        mapped_promo["trigger_items"] = map_item_list(raw_trigger_items, name_map)
+        mapped_promo["target_items"] = map_item_list(raw_target_items, name_map)
         if "message" in mapped_promo:
             mapped_promo["message"] = map_ids_in_text(mapped_promo.get("message", ""), name_map)
+
+        combo_items = [*raw_trigger_items, *raw_target_items]
+        subtotal, priced_count, missing_count = summarize_item_prices(combo_items, price_lookup)
+        if str(mapped_promo.get("offer_type", "")).lower() == "buy_2_get_1" and len(combo_items) >= 3:
+            discount_pct = round(1.0 / 3.0, 4)
+        else:
+            discount_pct = suggest_discount_pct(
+                confidence=float(promo.get("confidence", 0.0) or 0.0),
+                lift=float(promo.get("lift", 1.0) or 1.0),
+                item_count=len(combo_items),
+            )
+        discount_amount = round(subtotal * discount_pct, 2) if subtotal > 0 else 0.0
+        discounted_total = round(max(0.0, subtotal - discount_amount), 2) if subtotal > 0 else 0.0
+        mapped_promo["pricing"] = {
+            "subtotal": subtotal,
+            "discount_pct": discount_pct,
+            "discount_amount": discount_amount,
+            "discounted_total": discounted_total,
+            "priced_items": priced_count,
+            "missing_prices": missing_count,
+        }
         mapped_promos.append(mapped_promo)
 
     mapped_cross_sell = {}
+    cross_sell_pricing = []
     for base_item, suggestions in (ml_payload.get("cross_sell_suggestions", {}) or {}).items():
         mapped_base = resolve_item_label(base_item, name_map)
-        mapped_cross_sell[mapped_base] = map_item_list(suggestions or [], name_map)
+        raw_suggestions = suggestions or []
+        mapped_cross_sell[mapped_base] = map_item_list(raw_suggestions, name_map)
+
+        base_price = price_lookup.get(normalize_price_lookup_key(base_item))
+        suggestion_rows = []
+        for raw_suggestion in raw_suggestions:
+            suggestion_price = price_lookup.get(normalize_price_lookup_key(raw_suggestion))
+            if suggestion_price is None:
+                discount_pct = 0.0
+                discounted_price = None
+                savings = None
+            else:
+                discount_pct = suggest_discount_pct(confidence=0.55, lift=1.2, item_count=2)
+                savings = round(suggestion_price * discount_pct, 2)
+                discounted_price = round(max(0.0, suggestion_price - savings), 2)
+
+            suggestion_rows.append(
+                {
+                    "item": resolve_item_label(raw_suggestion, name_map),
+                    "price": suggestion_price,
+                    "discount_pct": discount_pct,
+                    "discount_amount": savings,
+                    "discounted_price": discounted_price,
+                }
+            )
+
+        cross_sell_pricing.append(
+            {
+                "base_item": mapped_base,
+                "base_price": base_price,
+                "suggestions": suggestion_rows,
+            }
+        )
 
     fbt_rows = mapped_fbt_rows
     top_recommendations = []
@@ -820,6 +1150,16 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
     pipeline_status["message"] = "ML analysis complete!"
     persist_runtime_state()
 
+    final_thresholds = metrics.get("thresholds", {}) or {}
+    threshold_preview = {
+        "minsup": final_thresholds.get("min_support"),
+        "mincof": final_thresholds.get("min_confidence"),
+        "min_lift": final_thresholds.get("min_lift"),
+        "min_support": final_thresholds.get("min_support"),
+        "min_confidence": final_thresholds.get("min_confidence"),
+        "source": "ml_final",
+    }
+
     return {
         "success": True,
         "run_id": final_record.get("run_id"),
@@ -830,12 +1170,15 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         "total_records": int(metrics.get("basket_stats", {}).get("transactions", 0)),
         "feature_columns": [],
         "item_frequencies": {},
+        "thresholds": threshold_preview,
         "recommendations": top_recommendations,
         "top_bundles": top_bundles,
         "frequently_bought_together": fbt_rows,
         "cross_sell_suggestions": mapped_cross_sell,
+        "cross_sell_pricing": cross_sell_pricing,
         "promo_recommendations": mapped_promos,
         "business_insights": business_insights,
+        "price_coverage": price_coverage,
         "governance": governance,
         "analytics_comparison": analytics_comparison,
         "logs": [
@@ -852,6 +1195,12 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
             {
                 "text": (
                     f"> Historical baselines: {int(analytics_comparison.get('historical_run_count', 0))} prior run(s)"
+                ),
+                "type": "info",
+            },
+            {
+                "text": (
+                    f"> Price coverage: {price_coverage['priced_items']}/{price_coverage['named_items']} masterlist items"
                 ),
                 "type": "info",
             },

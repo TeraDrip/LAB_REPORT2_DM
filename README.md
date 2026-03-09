@@ -104,3 +104,46 @@ File: `src/1-etl/data_etl.py`
   - You are running in REST fallback mode (no DB URL). Prefer setting `SUPABASE_DB_URL` so the ETL creates tables and inserts directly.
 - Insert fails saying the table does not exist:
   - Prefer setting `SUPABASE_DB_URL` so the ETL can create the table automatically.
+
+## 7) Iteration Evidence (3 Learning Phases)
+
+The MBA engine runs **3 explicit learning phases** and updates outputs automatically.
+
+| Phase | Data Slice Used | Automated Updates | Evidence Fields |
+|---|---|---|---|
+| 1 | Early sample (`~50%`, min 100 rows) | Initial thresholds + candidate rules | `metrics.phase`, `metrics.thresholds`, `metrics.rule_count`, `metrics.score` |
+| 2 | Mid sample (`~75%`, min 150 rows) | Re-tuned thresholds + re-scored rules | `metrics.thresholds`, `metrics.loop_trace`, `metrics.target_rule_count` |
+| 3 | Full dataset (`100%`) | Final rules, governance checks, recommendation payload | `payload.rules`, `governance.anomalies`, `governance.manual_review_required` |
+
+Where this is implemented:
+
+- `src/3-back-end/machine-learning/teradrip_ml.py`
+  - `for phase in (1, 2, 3)`
+  - optimization loop + scoring (`_optimization_loop`, `_score_rules`)
+  - governance/stability report (`_stability_report`)
+
+Where evidence is stored:
+
+- Supabase output table: `ml_recommendations` (JSON fields: `payload`, `metrics`, `governance`)
+- API response: `POST /api/ml/analyze` returns final run summary plus logs
+
+## 8) Edge Case Validation
+
+The ETL + MBA pipeline handles common failure and data-quality edge cases.
+
+| Edge Case | Handling | Expected Behavior |
+|---|---|---|
+| Empty columns / empty rows | Drop all-null columns and rows | Prevents invalid inserts and noisy features |
+| Duplicate records | `drop_duplicates()` | Avoids inflated support/confidence |
+| Null-like strings (`"", "nan", "none", "null"`) | Normalized to null | Cleaner type inference and DB consistency |
+| Mixed-type numeric columns | `pd.to_numeric(..., errors="coerce")` | Correct numeric typing when possible |
+| Date/time in mixed formats | `pd.to_datetime(..., format="mixed")` | Robust datetime parsing |
+| Identifier columns (`*_id`) | Forced to `varchar` | Prevents key corruption from numeric coercion |
+| CSV cleans to no usable rows/columns | File is skipped safely | Pipeline continues without crash |
+| DB direct insert unavailable | Fallback to REST mode | Upload can still proceed when possible |
+| Missing price for recommendation items | Price shown as unavailable (`N/A`) | Recommendations remain usable with transparent gaps |
+
+Edge-case implementation references:
+
+- `src/1-etl/data_etl.py` (`clean_dataframe`, `infer_sql_type_and_transform`, load fallbacks)
+- `src/3-back-end/backend.py` (upload diagnostics + price coverage reporting)

@@ -498,7 +498,12 @@ class TeraDripMBAEngine:
     def _itemsets_to_bundles(self, itemsets: pd.DataFrame, limit: int = 10) -> List[Dict[str, Any]]:
         if itemsets.empty:
             return []
-        sorted_sets = itemsets.sort_values("support", ascending=False).head(limit)
+        # A bundle should contain at least two items; filter singleton itemsets out.
+        multi_itemsets = itemsets[itemsets["itemsets"].apply(lambda s: len(s) >= 2)]
+        if multi_itemsets.empty:
+            return []
+
+        sorted_sets = multi_itemsets.sort_values("support", ascending=False).head(limit)
         bundles = []
         for row in sorted_sets.itertuples(index=False):
             items = sorted(map(str, row.itemsets))

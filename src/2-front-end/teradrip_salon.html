@@ -719,7 +719,7 @@
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
             grid-template-areas:
-                'upload ml'
+                'upload threshold'
                 'time ml';
             gap: 20px;
             align-items: stretch;
@@ -727,10 +727,46 @@
 
         .upload-card { grid-area: upload; }
         .time-card { grid-area: time; }
+        .threshold-card { grid-area: threshold; }
         .ml-output-card {
             grid-area: ml;
             display: flex;
             flex-direction: column;
+        }
+
+        .threshold-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .threshold-pill {
+            border: 1px solid var(--glass-border);
+            border-radius: var(--border-radius-xs);
+            background: rgba(255, 255, 255, 0.45);
+            padding: 12px;
+        }
+
+        .threshold-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .threshold-value {
+            margin-top: 4px;
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .threshold-meta {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.45;
         }
 
         .ml-output-card .console {
@@ -765,6 +801,7 @@
                 grid-template-areas:
                     'upload'
                     'time'
+                    'threshold'
                     'ml';
             }
         }
@@ -1093,6 +1130,24 @@
                         </div>
                         <div id="uploadStatus" style="text-align: center; font-size: 11px;"></div>
                     </div>
+
+                    <div class="card threshold-card">
+                        <div class="card-header">
+                            <span class="card-title">Adaptive Thresholds</span>
+                        </div>
+                        <div class="threshold-grid">
+                            <div class="threshold-pill">
+                                <div class="threshold-label">Minsup</div>
+                                <div class="threshold-value" id="minsupValue">--</div>
+                            </div>
+                            <div class="threshold-pill">
+                                <div class="threshold-label">Mincof</div>
+                                <div class="threshold-value" id="mincofValue">--</div>
+                            </div>
+                        </div>
+                        <div class="threshold-meta" id="thresholdMeta">Thresholds are generated when you click Generate Recommendations.</div>
+                    </div>
+
                     <!-- ML Output Card -->
                     <div class="card ml-output-card">
                         <div class="onboarding-header">
@@ -1317,6 +1372,37 @@
             consoleEl.scrollTop = consoleEl.scrollHeight;
         }
 
+        function formatThresholdNumber(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            return num.toFixed(4);
+        }
+
+        function renderThresholds(thresholds, options = {}) {
+            const minsupEl = document.getElementById('minsupValue');
+            const mincofEl = document.getElementById('mincofValue');
+            const metaEl = document.getElementById('thresholdMeta');
+            if (!minsupEl || !mincofEl || !metaEl) return;
+
+            if (!thresholds) {
+                minsupEl.textContent = '--';
+                mincofEl.textContent = '--';
+                metaEl.textContent = 'Thresholds are generated when you click Generate Recommendations.';
+                return;
+            }
+
+            const minsup = thresholds.minsup ?? thresholds.min_support;
+            const mincof = thresholds.mincof ?? thresholds.min_confidence;
+            minsupEl.textContent = formatThresholdNumber(minsup);
+            mincofEl.textContent = formatThresholdNumber(mincof);
+
+            const sourceLabel = options.sourceLabel || (thresholds.source === 'ml_final' ? 'from ML final model' : 'from uploaded dataset');
+            const algoText = thresholds.algorithm ? ` Algorithm: ${thresholds.algorithm}.` : '';
+            const tx = Number(thresholds.transactions || 0);
+            const txText = tx > 0 ? ` Transactions: ${tx.toLocaleString()}.` : '';
+            metaEl.textContent = `Thresholds auto-tuned ${sourceLabel}.${algoText}${txText}`;
+        }
+
         async function processPipeline() {
             const statusDiv = document.getElementById('uploadStatus');
             const consoleEl = document.getElementById('console');
@@ -1328,6 +1414,7 @@
             
             statusDiv.innerHTML = '<div class="status-badge processing"><span class="status-dot"></span>Processing ETL pipeline...</div>';
             consoleEl.innerHTML = '';
+            renderThresholds(null);
             
             // Start timer
             processTime = 0;
@@ -1363,6 +1450,8 @@
                 if (response.ok && result.success) {
                     currentTableName = result.latest_loaded_table || result.table_name;
                     currentUploadTimestamp = (result.status && result.status.end_time) || new Date().toISOString();
+                    const tableResolution = result.table_resolution || {};
+                    const appendMode = tableResolution.mode === 'append_existing';
 
                     if (Array.isArray(result.etl_log_tail) && result.etl_log_tail.length > 0) {
                         addConsoleLine(consoleEl, '> ETL SCRIPT OUTPUT:', 'info');
@@ -1398,7 +1487,11 @@
                             addConsoleLine(consoleEl, `> FIX: ${result.load_hint}`, 'error');
                         }
                     } else {
-                        addConsoleLine(consoleEl, `> LOAD: Inserted into table "${result.table_name}"`, 'success');
+                        if (appendMode) {
+                            addConsoleLine(consoleEl, `> LOAD: Appended to existing table "${result.table_name}" (matched by schema)`, 'success');
+                        } else {
+                            addConsoleLine(consoleEl, `> LOAD: Inserted into new table "${result.table_name}"`, 'success');
+                        }
                         addConsoleLine(consoleEl, '> WAREHOUSE: Data stored successfully!', 'success');
                     }
                     document.getElementById('timeRing').style.strokeDashoffset = 276 - (276 * 80 / 100);
@@ -1408,7 +1501,8 @@
                         statusDiv.innerHTML = `<div class="status-badge processing"><span class="status-dot"></span>ETL complete with warning: CSV saved locally</div>`;
                         addConsoleLine(consoleEl, '> ETL Pipeline Complete (local mode)', 'warning');
                     } else {
-                        statusDiv.innerHTML = `<div class="status-badge success"><span class="status-dot"></span>âœ“ ETL Complete: ${result.rows.toLocaleString()} rows â†’ ${result.table_name}</div>`;
+                        const label = appendMode ? 'Appended' : 'Loaded';
+                        statusDiv.innerHTML = `<div class="status-badge success"><span class="status-dot"></span>âœ“ ETL Complete: ${label} ${result.rows.toLocaleString()} rows â†’ ${result.table_name}</div>`;
                         addConsoleLine(consoleEl, 'âœ“ ETL Pipeline Complete!', 'success');
                     }
                 } else {
@@ -1459,6 +1553,7 @@
             
             updateStepStates(4); // ML step active
             addConsoleLine(consoleEl, '> Starting ML Analysis...', 'info');
+            document.getElementById('thresholdMeta').textContent = 'Generating minsup/mincof from the latest dataset...';
 
             try {
                 document.getElementById('seg1').classList.add('filled');
@@ -1495,6 +1590,7 @@
                         } else {
                             clearInterval(logInterval);
                             updateStepStates(5);
+                            renderThresholds(result.thresholds, { sourceLabel: 'from ML final model' });
                             
                             renderMLWidgets(result);
                         }
@@ -1513,6 +1609,7 @@
 
                 addConsoleLine(consoleEl, `> ML Error: ${message}`, 'error');
                 document.getElementById('mlPercent').textContent = '0%';
+                renderThresholds(null);
                 ['topBundlesContainer', 'fbtContainer', 'promoContainer', 'crossSellContainer'].forEach((id) => {
                     const el = document.getElementById(id);
                     if (el) {
@@ -1702,6 +1799,18 @@
             recEl.innerHTML = recommendationLines.map((line) => `<div style="margin-bottom: 6px;">${line}</div>`).join('');
         }
 
+        function formatMoney(value) {
+            const amount = Number(value);
+            if (!Number.isFinite(amount)) return 'N/A';
+            return `PHP ${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function formatDiscountPct(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return 'N/A';
+            return `${(num * 100).toFixed(1)}%`;
+        }
+
         function renderMLWidgets(result) {
             const bundlesContainer = document.getElementById('topBundlesContainer');
             const fbtContainer = document.getElementById('fbtContainer');
@@ -1718,10 +1827,15 @@
                 const bgClass = i === 0 ? 'yellow' : 'light';
                 const items = (bundle.items || []).slice(0, 4).join(' + ');
                 const supportPct = Math.round((bundle.support || 0) * 1000) / 10;
+                const pricing = bundle.pricing || {};
+                const pricingText = Number(pricing.subtotal || 0) > 0
+                    ? `List ${formatMoney(pricing.subtotal)} | Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)}) | Final ${formatMoney(pricing.discounted_total)}`
+                    : 'Price details unavailable for one or more items.';
                 return `
                     <div class="event ${bgClass}">
                         <div class="event-title">📦 Bundle: ${items || 'N/A'}</div>
                         <div class="event-desc">Support ${supportPct}% • ${(bundle.explanation || 'Strong co-occurrence pattern')}</div>
+                        <div class="event-desc">${pricingText}</div>
                     </div>
                 `;
             }).join('');
@@ -1730,20 +1844,30 @@
                 const left = (row.if_items || []).join(' + ');
                 const right = (row.then_items || []).join(' + ');
                 const confidencePct = Math.round((row.confidence || 0) * 1000) / 10;
+                const pricing = row.pricing || {};
+                const pricingText = Number(pricing.combined_subtotal || 0) > 0
+                    ? `If ${formatMoney(pricing.if_subtotal)} + Then ${formatMoney(pricing.then_subtotal)} = ${formatMoney(pricing.combined_subtotal)} | Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)}) | Final ${formatMoney(pricing.discounted_total)}`
+                    : 'Price details unavailable for this FBT pair.';
                 return `
                     <div class="event light">
                         <div class="event-title">🛒 FBT: ${left || 'N/A'} → ${right || 'N/A'}</div>
                         <div class="event-desc">Confidence ${confidencePct}% • Lift ${(row.lift || 0).toFixed(2)}</div>
+                        <div class="event-desc">${pricingText}</div>
                     </div>
                 `;
             }).join('');
 
             const promoCards = promos.slice(0, 4).map((promo) => {
                 const trigger = (promo.trigger_items || []).join(', ');
+                const pricing = promo.pricing || {};
+                const pricingText = Number(pricing.subtotal || 0) > 0
+                    ? `Promo value: ${formatMoney(pricing.subtotal)} | Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)}) | Customer pays ${formatMoney(pricing.discounted_total)}`
+                    : 'Price details unavailable for this promo.';
                 return `
                     <div class="event light">
                         <div class="event-title">🏷 Promo: ${(promo.offer_type || 'bundle_discount').replaceAll('_', ' ')}</div>
                         <div class="event-desc">${promo.message || ''} | Trigger: ${trigger || 'N/A'}</div>
+                        <div class="event-desc">${pricingText}</div>
                     </div>
                 `;
             }).join('');
@@ -1752,10 +1876,25 @@
             fbtContainer.innerHTML = fbtCards || '<div class="event light"><div class="event-desc">No FBT data yet.</div></div>';
             promoContainer.innerHTML = promoCards || '<div class="event light"><div class="event-desc">No promo suggestions yet.</div></div>';
 
-            const crossSellEntries = Object.entries(crossSell).slice(0, 3);
-            crossSellContainer.innerHTML = crossSellEntries.length > 0
-                ? `<div class="event light"><div class="event-desc">${crossSellEntries.map(([k, v]) => `${k} -> ${(v || []).slice(0, 3).join(', ')}`).join(' | ')}</div></div>`
-                : '<div class="event light"><div class="event-desc">No cross-sell map available yet.</div></div>';
+            const crossSellPricingRows = Array.isArray(result.cross_sell_pricing) ? result.cross_sell_pricing : [];
+            if (crossSellPricingRows.length > 0) {
+                crossSellContainer.innerHTML = crossSellPricingRows.slice(0, 3).map((row) => {
+                    const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
+                    const suggestionText = suggestions.slice(0, 3).map((s) => {
+                        if (!Number.isFinite(Number(s.price))) return `${s.item} (price N/A)`;
+                        return `${s.item}: ${formatMoney(s.price)} -> ${formatMoney(s.discounted_price)} (${formatDiscountPct(s.discount_pct)} off)`;
+                    }).join(' | ');
+                    const baseText = Number.isFinite(Number(row.base_price))
+                        ? `${row.base_item} (${formatMoney(row.base_price)})`
+                        : `${row.base_item} (price N/A)`;
+                    return `<div class="event light"><div class="event-title">🔁 ${baseText}</div><div class="event-desc">${suggestionText || 'No priced suggestions available.'}</div></div>`;
+                }).join('');
+            } else {
+                const crossSellEntries = Object.entries(crossSell).slice(0, 3);
+                crossSellContainer.innerHTML = crossSellEntries.length > 0
+                    ? `<div class="event light"><div class="event-desc">${crossSellEntries.map(([k, v]) => `${k} -> ${(v || []).slice(0, 3).join(', ')}`).join(' | ')}</div></div>`
+                    : '<div class="event light"><div class="event-desc">No cross-sell map available yet.</div></div>';
+            }
 
             renderAnalyticsComparison(result.analytics_comparison, result);
         }
@@ -1794,6 +1933,8 @@
                 });
                 applyRecommendationFilter(recommendationFilter.value);
             }
+
+            renderThresholds(null);
 
             try {
                 const response = await fetch(`${API_BASE}/health`);
