@@ -101,6 +101,67 @@ def set_pending_job(job: Dict[str, Any] | None) -> None:
         persist_runtime_state()
 
 
+# ML Results History Management
+ML_HISTORY_PATH = PROJECT_ROOT / "src" / "3-back-end" / "ml_results_history.json"
+ML_HISTORY_MAX_ENTRIES = 50  # Keep last 50 runs
+
+
+def load_ml_history() -> List[Dict[str, Any]]:
+    """Load ML results history from file."""
+    if not ML_HISTORY_PATH.exists():
+        return []
+    try:
+        history = json.loads(ML_HISTORY_PATH.read_text(encoding="utf-8"))
+        # Ensure history is a list
+        if not isinstance(history, list):
+            return []
+        return history
+    except Exception as exc:
+        print(f"[WARN] Could not load ML history: {exc}")
+        return []
+
+
+
+def save_ml_result_to_history(result: Dict[str, Any], table_name: str) -> None:
+    """Save an ML result to history with metadata."""
+    try:
+        history = load_ml_history()
+        print(f"[DEBUG] Current history has {len(history)} entries before saving new run")
+        
+        # Create history entry
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        entry = {
+            "run_id": run_id,
+            "timestamp": datetime.now().isoformat(),
+            "table_name": table_name,
+            "result": result,
+            "csv_filename": table_name.replace("table_", "").replace("_", " ").title() if table_name else "Unknown"
+        }
+        
+        # Check if this run_id already exists (avoid duplicates)
+        existing_run_ids = {e.get("run_id") for e in history}
+        if run_id in existing_run_ids:
+            print(f"[INFO] Run {run_id} already exists in history, skipping duplicate")
+            return
+        
+        # Prepend new entry
+        history.insert(0, entry)
+        print(f"[DEBUG] Added new entry, history now has {len(history)} entries")
+        
+        # Keep only the most recent entries
+        history = history[:ML_HISTORY_MAX_ENTRIES]
+        
+        # Save to file
+        ML_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ML_HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[INFO] ✓ Saved ML run {run_id} to history file (total: {len(history)} runs)")
+        print(f"[INFO] History file location: {ML_HISTORY_PATH}")
+    except Exception as exc:
+        print(f"[ERROR] Could not save ML result to history: {exc}")
+        import traceback
+        traceback.print_exc()
+
+
 def sanitize_identifier(raw_name: str, fallback: str = "column") -> str:
     """Sanitize column names for database compatibility."""
     value = re.sub(r"[^a-zA-Z0-9_]+", "_", str(raw_name).strip().lower())
@@ -1317,7 +1378,7 @@ def upload_csv():
 @app.route("/api/ml/analyze", methods=["POST"])
 def run_ml_analysis():
     """Run hybrid MBA analysis and return frontend-ready recommendations."""
-    global pipeline_status
+    global pipeline_status, latest_loaded_table
 
     pipeline_status["step"] = 5
     pipeline_status["message"] = "Running ML analysis..."
@@ -1334,6 +1395,11 @@ def run_ml_analysis():
             }
         )
         result = run_ml_analysis_core(payload)
+        
+        # Save result to history
+        table_used = latest_loaded_table or payload.get("table_name") or "unknown_table"
+        save_ml_result_to_history(result, table_used)
+        
         set_pending_job(None)
         return jsonify(result)
     except ValueError as e:
@@ -1343,6 +1409,42 @@ def run_ml_analysis():
     except Exception as e:
         pipeline_status["error"] = str(e)
         persist_runtime_state()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ml/history", methods=["GET"])
+def get_ml_history():
+    """Get list of historical ML runs."""
+    try:
+        history = load_ml_history()
+        
+        # Return summary info (without full results to keep payload small)
+        summary = []
+        for entry in history:
+            summary.append({
+                "run_id": entry.get("run_id"),
+                "timestamp": entry.get("timestamp"),
+                "table_name": entry.get("table_name"),
+                "csv_filename": entry.get("csv_filename", "Unknown")
+            })
+        
+        return jsonify({"history": summary, "count": len(summary)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ml/history/<run_id>", methods=["GET"])
+def get_ml_run_by_id(run_id: str):
+    """Get a specific ML run result by run_id."""
+    try:
+        history = load_ml_history()
+        
+        for entry in history:
+            if entry.get("run_id") == run_id:
+                return jsonify(entry.get("result", {}))
+        
+        return jsonify({"error": f"Run {run_id} not found"}), 404
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 

@@ -8,9 +8,6 @@
       "customer_transaction_id",
       "transaction_date",
       "items_used",
-      "Total_Item_Cost",
-      "Total_Service_Cost",
-      "Total_Transaction_Cost",
       "Professional Hair Shears",
       "Thinning Scissors",
       "Electric Hair Clippers",
@@ -33,11 +30,11 @@
       "Hair Glaze/Toner"
     ],
     "error": null,
-    "start_time": "2026-03-09T01:46:41.833650",
-    "end_time": "2026-03-09T01:46:46.592529"
+    "start_time": "2026-03-10T01:07:36.637110",
+    "end_time": "2026-03-10T01:07:42.052218"
   },
-  "latest_loaded_table": "table_20260308_234526_hairstylist_dataset_columns_only",
-  "latest_upload_time": "2026-03-09T01:46:46.592529",
+  "latest_loaded_table": "teradrip_lab_report_2_datasets_hairstylist_dataset",
+  "latest_upload_time": "2026-03-10T01:07:42.052218",
   "pending_job": null,
-  "saved_at": "2026-03-09T01:47:03.725273"
+  "saved_at": "2026-03-10T01:08:03.811350"
 }

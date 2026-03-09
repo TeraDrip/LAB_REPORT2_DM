@@ -1002,6 +1002,46 @@
         @media (max-width: 1024px) {
             .analytics-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
+
+        /* Price and Discount Highlighting */
+        .price-highlight {
+            display: inline-block;
+            background: linear-gradient(135deg, rgba(34, 197, 94, 0.15), rgba(16, 185, 129, 0.2));
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 700;
+            color: #065f46;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15);
+        }
+
+        .discount-highlight {
+            display: inline-block;
+            background: linear-gradient(135deg, rgba(251, 146, 60, 0.2), rgba(249, 115, 22, 0.25));
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 700;
+            color: #9a3412;
+            border: 1px solid rgba(249, 115, 22, 0.4);
+            box-shadow: 0 2px 8px rgba(249, 115, 22, 0.2);
+        }
+
+        .final-price-highlight {
+            display: inline-block;
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(167, 139, 250, 0.25));
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 800;
+            color: #5b21b6;
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            box-shadow: 0 2px 8px rgba(139, 92, 246, 0.2);
+        }
+
+        .pricing-detail-row {
+            padding: 8px 0;
+            border-top: 1px dashed rgba(167, 139, 250, 0.2);
+            margin-top: 8px;
+        }
     </style>
 </head>
 <body>
@@ -1350,17 +1390,12 @@
                 const circle = el.querySelector('.step-circle');
                 if (i < completedCount) {
                     el.classList.add('completed');
-
-                    circle.textContent = '✓';
-
-                    circle.textContent = 'âœ“';
-
                 } else if (i === completedCount) {
                     el.classList.add('active');
-                    circle.textContent = i + 1;
-                } else {
-                    circle.textContent = i + 1;
                 }
+
+                // Keep numeric labels visible at all times: 1,2,3,4,5
+                circle.textContent = i + 1;
             });
         }
 
@@ -1502,8 +1537,8 @@
                         addConsoleLine(consoleEl, '> ETL Pipeline Complete (local mode)', 'warning');
                     } else {
                         const label = appendMode ? 'Appended' : 'Loaded';
-                        statusDiv.innerHTML = `<div class="status-badge success"><span class="status-dot"></span>âœ“ ETL Complete: ${label} ${result.rows.toLocaleString()} rows â†’ ${result.table_name}</div>`;
-                        addConsoleLine(consoleEl, 'âœ“ ETL Pipeline Complete!', 'success');
+                        statusDiv.innerHTML = `<div class="status-badge success"><span class="status-dot"></span>[OK] ETL Complete: ${label} ${result.rows.toLocaleString()} rows -> ${result.table_name}</div>`;
+                        addConsoleLine(consoleEl, '[OK] ETL Pipeline Complete!', 'success');
                     }
                 } else {
                     throw new Error(result.error || 'Pipeline failed');
@@ -1518,7 +1553,7 @@
                     runSimulatedPipeline(statusDiv, consoleEl);
                 } else {
                     statusDiv.innerHTML = `<div class="status-badge error"><span class="status-dot"></span>${error.message}</div>`;
-                    addConsoleLine(consoleEl, `âœ— Error: ${error.message}`, 'error');
+                    addConsoleLine(consoleEl, `[ERROR] ${error.message}`, 'error');
                 }
             }
         }
@@ -1538,7 +1573,7 @@
                     clearInterval(interval);
                     clearInterval(timeInterval);
                     statusDiv.innerHTML = '<div class="status-badge success"><span class="status-dot"></span>ETL Complete (Offline Mode)</div>';
-                    addConsoleLine(consoleEl, 'âœ“ Simulation Complete', 'success');
+                    addConsoleLine(consoleEl, '[OK] Simulation Complete', 'success');
                 }
             }, 800);
         }
@@ -1591,7 +1626,6 @@
                             clearInterval(logInterval);
                             updateStepStates(5);
                             renderThresholds(result.thresholds, { sourceLabel: 'from ML final model' });
-                            
                             renderMLWidgets(result);
                         }
                     }, 400);
@@ -1628,7 +1662,7 @@
                 { text: '> Running FP-Growth Algorithm...', type: 'warning' },
                 { text: '> Finding frequent itemsets...', type: 'info' },
                 { text: '> Generating association rules...', type: 'info' },
-                { text: 'âœ“ Analysis Complete!', type: 'success' }
+                { text: '[OK] Analysis Complete!', type: 'success' }
             ];
             let index = 0;
             
@@ -1829,13 +1863,13 @@
                 const supportPct = Math.round((bundle.support || 0) * 1000) / 10;
                 const pricing = bundle.pricing || {};
                 const pricingText = Number(pricing.subtotal || 0) > 0
-                    ? `List ${formatMoney(pricing.subtotal)} | Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)}) | Final ${formatMoney(pricing.discounted_total)}`
+                    ? `<span class="price-highlight">List ${formatMoney(pricing.subtotal)}</span> | <span class="discount-highlight">Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span> | <span class="final-price-highlight">Final ${formatMoney(pricing.discounted_total)}</span>`
                     : 'Price details unavailable for one or more items.';
                 return `
                     <div class="event ${bgClass}">
                         <div class="event-title">📦 Bundle: ${items || 'N/A'}</div>
                         <div class="event-desc">Support ${supportPct}% • ${(bundle.explanation || 'Strong co-occurrence pattern')}</div>
-                        <div class="event-desc">${pricingText}</div>
+                        <div class="event-desc pricing-detail-row">${pricingText}</div>
                     </div>
                 `;
             }).join('');
@@ -1846,13 +1880,13 @@
                 const confidencePct = Math.round((row.confidence || 0) * 1000) / 10;
                 const pricing = row.pricing || {};
                 const pricingText = Number(pricing.combined_subtotal || 0) > 0
-                    ? `If ${formatMoney(pricing.if_subtotal)} + Then ${formatMoney(pricing.then_subtotal)} = ${formatMoney(pricing.combined_subtotal)} | Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)}) | Final ${formatMoney(pricing.discounted_total)}`
+                    ? `<span class="price-highlight">If ${formatMoney(pricing.if_subtotal)} + Then ${formatMoney(pricing.then_subtotal)} = ${formatMoney(pricing.combined_subtotal)}</span> | <span class="discount-highlight">Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span> | <span class="final-price-highlight">Final ${formatMoney(pricing.discounted_total)}</span>`
                     : 'Price details unavailable for this FBT pair.';
                 return `
                     <div class="event light">
                         <div class="event-title">🛒 FBT: ${left || 'N/A'} → ${right || 'N/A'}</div>
                         <div class="event-desc">Confidence ${confidencePct}% • Lift ${(row.lift || 0).toFixed(2)}</div>
-                        <div class="event-desc">${pricingText}</div>
+                        <div class="event-desc pricing-detail-row">${pricingText}</div>
                     </div>
                 `;
             }).join('');
@@ -1861,13 +1895,13 @@
                 const trigger = (promo.trigger_items || []).join(', ');
                 const pricing = promo.pricing || {};
                 const pricingText = Number(pricing.subtotal || 0) > 0
-                    ? `Promo value: ${formatMoney(pricing.subtotal)} | Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)}) | Customer pays ${formatMoney(pricing.discounted_total)}`
+                    ? `<span class="price-highlight">Promo value: ${formatMoney(pricing.subtotal)}</span> | <span class="discount-highlight">Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span> | <span class="final-price-highlight">Customer pays ${formatMoney(pricing.discounted_total)}</span>`
                     : 'Price details unavailable for this promo.';
                 return `
                     <div class="event light">
                         <div class="event-title">🏷 Promo: ${(promo.offer_type || 'bundle_discount').replaceAll('_', ' ')}</div>
                         <div class="event-desc">${promo.message || ''} | Trigger: ${trigger || 'N/A'}</div>
-                        <div class="event-desc">${pricingText}</div>
+                        <div class="event-desc pricing-detail-row">${pricingText}</div>
                     </div>
                 `;
             }).join('');
@@ -1882,12 +1916,12 @@
                     const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
                     const suggestionText = suggestions.slice(0, 3).map((s) => {
                         if (!Number.isFinite(Number(s.price))) return `${s.item} (price N/A)`;
-                        return `${s.item}: ${formatMoney(s.price)} -> ${formatMoney(s.discounted_price)} (${formatDiscountPct(s.discount_pct)} off)`;
+                        return `${s.item}: <span class="price-highlight">${formatMoney(s.price)}</span> → <span class="final-price-highlight">${formatMoney(s.discounted_price)}</span> <span class="discount-highlight">(${formatDiscountPct(s.discount_pct)} off)</span>`;
                     }).join(' | ');
                     const baseText = Number.isFinite(Number(row.base_price))
-                        ? `${row.base_item} (${formatMoney(row.base_price)})`
+                        ? `${row.base_item} (<span class="price-highlight">${formatMoney(row.base_price)}</span>)`
                         : `${row.base_item} (price N/A)`;
-                    return `<div class="event light"><div class="event-title">🔁 ${baseText}</div><div class="event-desc">${suggestionText || 'No priced suggestions available.'}</div></div>`;
+                    return `<div class="event light"><div class="event-title">🔁 ${baseText}</div><div class="event-desc pricing-detail-row">${suggestionText || 'No priced suggestions available.'}</div></div>`;
                 }).join('');
             } else {
                 const crossSellEntries = Object.entries(crossSell).slice(0, 3);
@@ -1939,8 +1973,8 @@
             try {
                 const response = await fetch(`${API_BASE}/health`);
                 const health = await response.json();
-                console.log('âœ“ Backend connected:', health);
-                addConsoleLine(document.getElementById('console'), 'âœ“ Backend connected', 'success');
+                console.log('[OK] Backend connected:', health);
+                addConsoleLine(document.getElementById('console'), '[OK] Backend connected', 'success');
             } catch (error) {
                 console.log('Backend not available, offline mode enabled');
                 addConsoleLine(document.getElementById('console'), '> Offline mode (start backend for full features)', 'warning');
