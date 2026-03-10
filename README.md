@@ -268,41 +268,204 @@ Storage error handling:
 
 ### 9.5 Machine Learning Layer (Scikit-learn or XGBoost)
 
-Feature pull from Supabase:
+This layer contains a full recommendation sub-pipeline, not just a single model call.
 
-- query cleaned/feature tables via SQL or Supabase client
-- enforce feature schema and null policy before training/scoring
+Concrete sub-pipeline:
 
-Model training/scoring options:
+1. Input acquisition from Supabase
+2. Basket matrix construction and feature shaping
+3. Adaptive threshold generation (auto-threshold logic)
+4. Candidate mining loop (Apriori/FP-Growth with threshold tuning)
+5. Rule scoring and selection
+6. Rule stability and governance checks
+7. Recommendation artifact generation
+8. Output persistence and API serving
 
-- Scikit-learn (classification/regression pipelines)
-- XGBoost (`xgboost.XGBClassifier` / `XGBRegressor`) for boosted-tree performance
+#### 9.5.1 Inputs and Feature Construction
 
-Typical ML flow:
+Input source:
 
-1. fetch features from Supabase
-2. split/train/evaluate
-3. generate predictions/recommendations
-4. push outputs back to Supabase (`ml_predictions`, `ml_recommendations`)
+- transactional rows pulled from Supabase source table
+- latest historical rules pulled from prior runs for stability comparison
 
-Prediction output format (JSON row):
+Feature construction (association-rule context):
+
+- detect item/service indicator columns
+- convert rows into boolean basket matrix (`transaction x item`)
+- compute basket stats used downstream (`transactions`, `distinct_items`, `density`, variance)
+
+Input/output data formats:
+
+- input: tabular transaction rows (JSON/SQL rows)
+- internal features: boolean DataFrame
+- output candidates: itemsets and rule DataFrames
+
+#### 9.5.2 Adaptive Thresholding (Auto-Threshold Logic)
+
+Thresholds are dynamically derived from dataset shape and density, then refined in iterative loops.
+
+Auto-generated thresholds include:
+
+- `min_support`
+- `min_confidence`
+- `min_lift`
+- `min_leverage`
+- `min_conviction`
+
+How auto-thresholding works:
+
+- start from basket-density-aware base thresholds
+- create stricter, baseline, and relaxed candidate threshold sets per loop
+- run candidate mining for each set
+- score each candidate result
+- keep the highest-quality candidate
+- early-stop on plateau after acceptable rule volume
+- perform rescue passes if rules are too few
+
+This is the intelligent auto-threshold mechanism required by the project rubric.
+
+#### 9.5.3 Algorithm Selection and Optimization Loop
+
+Algorithm selection:
+
+- choose Apriori for lower density and moderate dimensionality
+- choose FP-Growth for denser/larger patterns
+
+Optimization loop behavior:
+
+- evaluate multiple threshold candidates per loop
+- track per-loop trace (`candidate`, thresholds, algorithm, rule count, score)
+- keep both raw score (selection) and normalized score (0-100 display)
+
+Scoring model includes weighted quality signals:
+
+- confidence
+- lift
+- leverage
+- conviction
+- item coverage
+
+Plus penalties for:
+
+- rule-count mismatch against target
+- low-confidence rule sets
+
+#### 9.5.4 Rule Stability Test and Governance
+
+After selecting best rules, the pipeline compares new rules against previous run rules.
+
+Stability checks include:
+
+- added rules
+- removed rules
+- changed confidence deltas
+- dropped strong rules
+
+Governance anomalies include examples such as:
+
+- sharp confidence drops (`delta < -0.30`)
+- high-confidence but very low-support rules
+
+Governance output fields:
+
+- `added_count`, `removed_count`, `changed_count`, `dropped_strong_count`
+- `anomalies`
+- `manual_review_required`
+
+This is the explicit rule stability test mechanism required by the rubric.
+
+#### 9.5.5 Recommendation Generation Layer
+
+From final validated rules/itemsets, the ML layer generates multiple recommendation artifacts:
+
+- top bundles
+- frequently bought together (FBT)
+- cross-sell suggestions
+- promo recommendations
+
+Each recommendation includes business-facing metrics where available:
+
+- support
+- confidence
+- lift
+- leverage
+- conviction
+- pricing/discount metadata (in backend enrichment)
+
+Recommendation evaluation loop (implemented form):
+
+- recommendations are derived from rules selected by iterative optimization loops
+- loop traces and phase metrics expose how recommendation quality evolved
+- governance checks gate unstable outputs for manual review
+
+#### 9.5.6 Three-Phase Learning Strategy
+
+The ML run executes three explicit phases:
+
+1. Iteration 1: early sample (about 50%)
+2. Iteration 2: mid sample (about 75%)
+3. Iteration 3: full dataset (100%)
+
+Per-phase evidence captured:
+
+- thresholds used
+- selected algorithm
+- rule and itemset counts
+- score and score_raw
+- loop trace
+- governance summary
+
+#### 9.5.7 Persistence and API Contract
+
+ML outputs are persisted in Supabase table `ml_recommendations` with JSON fields:
+
+- `payload` (recommendation artifacts and rules)
+- `metrics` (phase, thresholds, score, loop trace, quality)
+- `governance` (stability and anomaly checks)
+
+Primary API contract for frontend:
+
+- `POST /api/ml/analyze`
+- returns final recommendation payload, analytics comparison, iteration phase history, and logs
+
+Example response fragments:
 
 ```json
 {
-  "run_id": "...",
-  "entity_id": "cust_001",
-  "prediction": 0.87,
-  "confidence": 0.91,
-  "model_version": "xgb_v3",
-  "scored_at": "2026-03-10T10:00:00Z"
+  "iteration_phases": [
+    {
+      "phase": 1,
+      "algorithm": "fpgrowth",
+      "score": 62.4,
+      "score_raw": -0.1523,
+      "thresholds": {
+        "min_support": 0.129,
+        "min_confidence": 0.489,
+        "min_lift": 1.17,
+        "min_leverage": 0.0086,
+        "min_conviction": 1.15
+      }
+    }
+  ]
 }
 ```
 
 ML error handling:
 
-- missing features: hard fail with missing column list
-- model drift/performance drop: flag for review, keep previous stable model
-- write-back failure: retry, then persist local fallback artifact
+- missing/invalid input features: fail fast with diagnostics
+- empty mined rules: retry via relaxed rescue thresholds
+- unstable output anomalies: set `manual_review_required=true`
+- DB write failure: retry then fallback to local output artifact
+
+Current implementation references:
+
+- `src/3-back-end/machine-learning/teradrip_ml.py`
+  - auto-thresholding: `auto_thresholds`
+  - optimization/scoring loop: `_optimization_loop`, `_score_rules`
+  - stability/governance: `_stability_report`
+  - recommendation artifacts: `_itemsets_to_bundles`, `_fbt_widget`, `_cross_sell_map`, `_promo_recommendations`
+- `src/3-back-end/backend.py`
+  - API exposure and dashboard payload shaping: `run_ml_analysis_core`
 
 ### 9.6 Orchestration Layer (Apache Airflow or Prefect)
 
