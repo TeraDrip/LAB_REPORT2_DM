@@ -6,6 +6,7 @@ import os
 import sys
 import re
 import json
+import math
 import subprocess
 import threading
 import warnings
@@ -423,12 +424,33 @@ def summarize_item_prices(item_ids: List[str], price_map: Dict[str, float]) -> T
     return round(subtotal, 2), priced_count, missing_count
 
 
-def suggest_discount_pct(confidence: float = 0.0, lift: float = 1.0, item_count: int = 2) -> float:
+def suggest_discount_pct(
+    confidence: float = 0.0,
+    lift: float = 1.0,
+    leverage: float = 0.0,
+    conviction: float = 1.0,
+    item_count: int = 2,
+) -> float:
     """Heuristic discount suggestion bounded to practical promo values."""
     conf = max(0.0, min(1.0, float(confidence or 0.0)))
     lift_score = max(0.0, min(1.0, (float(lift or 1.0) - 1.0) / 2.0))
+    leverage_score = max(0.0, min(1.0, float(leverage or 0.0) / 0.08))
+
+    raw_conviction = float(conviction or 1.0)
+    if math.isfinite(raw_conviction):
+        conviction_score = max(0.0, min(1.0, (raw_conviction - 1.0) / 2.0))
+    else:
+        conviction_score = 1.0
+
     size_bonus = max(0.0, min(0.06, (max(2, int(item_count or 2)) - 2) * 0.015))
-    discount = 0.05 + (conf * 0.08) + (lift_score * 0.06) + size_bonus
+    discount = (
+        0.05
+        + (conf * 0.07)
+        + (lift_score * 0.05)
+        + (leverage_score * 0.03)
+        + (conviction_score * 0.02)
+        + size_bonus
+    )
     return round(max(0.05, min(0.22, discount)), 4)
 
 
@@ -446,7 +468,24 @@ def build_run_snapshot(record: Dict) -> Dict:
     metrics = parse_json_field(record.get("metrics"))
     fbt = payload.get("frequently_bought_together", []) or []
     confidences = [float(row.get("confidence", 0.0) or 0.0) for row in fbt if isinstance(row, dict)]
+    leverages = [float(row.get("leverage", 0.0) or 0.0) for row in fbt if isinstance(row, dict)]
+    convictions = []
+    for row in fbt:
+        if not isinstance(row, dict):
+            continue
+        conv = row.get("conviction")
+        if conv is None:
+            continue
+        try:
+            conv_value = float(conv)
+        except Exception:
+            continue
+        if math.isfinite(conv_value):
+            convictions.append(conv_value)
+
     avg_confidence = (sum(confidences) / len(confidences)) if confidences else 0.0
+    avg_leverage = (sum(leverages) / len(leverages)) if leverages else 0.0
+    avg_conviction = (sum(convictions) / len(convictions)) if convictions else 0.0
     basket_stats = metrics.get("basket_stats", {}) or {}
 
     return {
@@ -459,6 +498,8 @@ def build_run_snapshot(record: Dict) -> Dict:
         "fbt_count": len(fbt),
         "promo_count": len(payload.get("promo_recommendations", []) or []),
         "avg_confidence": round(avg_confidence, 4),
+        "avg_leverage": round(avg_leverage, 4),
+        "avg_conviction": round(avg_conviction, 4),
     }
 
 
@@ -488,6 +529,8 @@ def build_analytics_comparison(latest_record: Dict, historical_rows: List[Dict])
         "bundle_count": round(avg("bundle_count"), 2),
         "promo_count": round(avg("promo_count"), 2),
         "avg_confidence": round(avg("avg_confidence"), 4),
+        "avg_leverage": round(avg("avg_leverage"), 4),
+        "avg_conviction": round(avg("avg_conviction"), 4),
     }
 
     deltas = {
@@ -510,6 +553,14 @@ def build_analytics_comparison(latest_record: Dict, historical_rows: List[Dict])
         "avg_confidence": {
             "absolute": round(latest_snapshot["avg_confidence"] - baseline["avg_confidence"], 4),
             "percent": pct_delta(float(latest_snapshot["avg_confidence"]), float(baseline["avg_confidence"])),
+        },
+        "avg_leverage": {
+            "absolute": round(latest_snapshot["avg_leverage"] - baseline["avg_leverage"], 4),
+            "percent": pct_delta(float(latest_snapshot["avg_leverage"]), float(baseline["avg_leverage"])),
+        },
+        "avg_conviction": {
+            "absolute": round(latest_snapshot["avg_conviction"] - baseline["avg_conviction"], 4),
+            "percent": pct_delta(float(latest_snapshot["avg_conviction"]), float(baseline["avg_conviction"])),
         },
     }
 
@@ -1010,6 +1061,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     supabase = get_supabase()
     final_record = None
+    phase_records: List[Dict[str, Any]] = []
 
     if refresh:
         engine = TeraDripMBAEngine(
@@ -1019,6 +1071,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         run_result = engine.run(limit=limit, persist=True)
         final_record = run_result.get("final") or {}
+        phase_records = run_result.get("phases") or []
     else:
         latest = (
             supabase.table(output_table)
@@ -1031,6 +1084,19 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         if latest.data:
             final_record = latest.data[0]
             run_id = final_record.get("run_id")
+            if run_id:
+                try:
+                    phase_query = (
+                        supabase.table(output_table)
+                        .select("phase, generated_at, algorithm_used, metrics")
+                        .eq("run_id", run_id)
+                        .order("phase")
+                        .limit(10)
+                        .execute()
+                    )
+                    phase_records = phase_query.data or []
+                except Exception:
+                    phase_records = []
 
     if not final_record:
         raise ValueError("No ML result found. Run with refresh=true first.")
@@ -1043,6 +1109,32 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
     historical_response = historical_query.execute()
     historical_rows = historical_response.data or []
     analytics_comparison = build_analytics_comparison(final_record, historical_rows)
+
+    iteration_phases = []
+    for phase_row in phase_records:
+        metrics_row = parse_json_field(phase_row.get("metrics"))
+        thresholds_row = metrics_row.get("thresholds", {}) or {}
+        basket_stats_row = metrics_row.get("basket_stats", {}) or {}
+        iteration_phases.append(
+            {
+                "phase": int(phase_row.get("phase", metrics_row.get("phase", 0)) or 0),
+                "generated_at": phase_row.get("generated_at") or final_record.get("generated_at"),
+                "algorithm": phase_row.get("algorithm_used") or metrics_row.get("algorithm"),
+                "score": float(metrics_row.get("score", 0.0) or 0.0),
+                "score_raw": float(metrics_row.get("score_raw", 0.0) or 0.0),
+                "rule_count": int(metrics_row.get("rule_count", 0) or 0),
+                "itemset_count": int(metrics_row.get("itemset_count", 0) or 0),
+                "target_rule_count": int(metrics_row.get("target_rule_count", 0) or 0),
+                "thresholds": thresholds_row,
+                "basket_stats": basket_stats_row,
+                "loop_trace": metrics_row.get("loop_trace", []) or [],
+            }
+        )
+
+    iteration_phases = sorted(
+        [row for row in iteration_phases if int(row.get("phase", 0) or 0) > 0],
+        key=lambda row: int(row.get("phase", 0) or 0),
+    )
 
     name_map, price_map = fetch_masterlist_details(
         supabase,
@@ -1069,7 +1161,13 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
             mapped_bundle["explanation"] = map_ids_in_text(mapped_bundle.get("explanation", ""), name_map)
 
         subtotal, priced_count, missing_count = summarize_item_prices(raw_items, price_lookup)
-        discount_pct = suggest_discount_pct(confidence=0.0, lift=1.0 + float(bundle.get("support", 0.0) or 0.0), item_count=len(raw_items))
+        discount_pct = suggest_discount_pct(
+            confidence=0.0,
+            lift=1.0 + float(bundle.get("support", 0.0) or 0.0),
+            leverage=float(bundle.get("leverage", 0.0) or 0.0),
+            conviction=float(bundle.get("conviction", 1.0) or 1.0),
+            item_count=len(raw_items),
+        )
         savings = round(subtotal * discount_pct, 2) if subtotal > 0 else 0.0
         discounted = round(max(0.0, subtotal - savings), 2) if subtotal > 0 else 0.0
         mapped_bundle["pricing"] = {
@@ -1096,6 +1194,8 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         discount_pct = suggest_discount_pct(
             confidence=float(row.get("confidence", 0.0) or 0.0),
             lift=float(row.get("lift", 1.0) or 1.0),
+            leverage=float(row.get("leverage", 0.0) or 0.0),
+            conviction=float(row.get("conviction", 1.0) or 1.0),
             item_count=len(raw_if_items) + len(raw_then_items),
         )
         discount_amount = round(combined_subtotal * discount_pct, 2) if combined_subtotal > 0 else 0.0
@@ -1130,6 +1230,8 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
             discount_pct = suggest_discount_pct(
                 confidence=float(promo.get("confidence", 0.0) or 0.0),
                 lift=float(promo.get("lift", 1.0) or 1.0),
+                leverage=float(promo.get("leverage", 0.0) or 0.0),
+                conviction=float(promo.get("conviction", 1.0) or 1.0),
                 item_count=len(combo_items),
             )
         discount_amount = round(subtotal * discount_pct, 2) if subtotal > 0 else 0.0
@@ -1160,7 +1262,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
                 discounted_price = None
                 savings = None
             else:
-                discount_pct = suggest_discount_pct(confidence=0.55, lift=1.2, item_count=2)
+                discount_pct = suggest_discount_pct(confidence=0.55, lift=1.2, leverage=0.01, conviction=1.1, item_count=2)
                 savings = round(suggestion_price * discount_pct, 2)
                 discounted_price = round(max(0.0, suggestion_price - savings), 2)
 
@@ -1216,6 +1318,8 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         "minsup": final_thresholds.get("min_support"),
         "mincof": final_thresholds.get("min_confidence"),
         "min_lift": final_thresholds.get("min_lift"),
+        "min_leverage": final_thresholds.get("min_leverage"),
+        "min_conviction": final_thresholds.get("min_conviction"),
         "min_support": final_thresholds.get("min_support"),
         "min_confidence": final_thresholds.get("min_confidence"),
         "source": "ml_final",
@@ -1242,6 +1346,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         "price_coverage": price_coverage,
         "governance": governance,
         "analytics_comparison": analytics_comparison,
+        "iteration_phases": iteration_phases,
         "loop_trace": metrics.get("loop_trace", []),
         "logs": [
             {"text": "> Connecting to Warehouse...", "type": "info"},

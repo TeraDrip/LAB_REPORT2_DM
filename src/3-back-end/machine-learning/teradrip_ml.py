@@ -54,6 +54,8 @@ class Thresholds:
     min_support: float
     min_confidence: float
     min_lift: float
+    min_leverage: float
+    min_conviction: float
 
 
 def utc_now_iso() -> str:
@@ -233,11 +235,15 @@ class TeraDripMBAEngine:
         min_support = clamp(0.02 + volume_penalty + (density * 0.08) + variance_boost, 0.005, 0.22)
         min_confidence = clamp(0.40 + (density * 0.22) - (n_rows / 50000.0) + variance_boost, 0.25, 0.9)
         min_lift = clamp(1.02 + (density * 0.30), 1.01, 2.2)
+        min_leverage = clamp(0.0005 + (density * 0.025), 0.0001, 0.08)
+        min_conviction = clamp(1.0 + (density * 0.35), 1.0, 2.5)
 
         return Thresholds(
             min_support=round(min_support, 4),
             min_confidence=round(min_confidence, 4),
             min_lift=round(min_lift, 4),
+            min_leverage=round(min_leverage, 6),
+            min_conviction=round(min_conviction, 4),
         )
 
     def _mine_rules_once(self, basket: pd.DataFrame, thresholds: Thresholds) -> tuple[str, pd.DataFrame, pd.DataFrame]:
@@ -258,12 +264,23 @@ class TeraDripMBAEngine:
         if rules.empty:
             return algorithm, itemsets, rules
 
+        rules = rules[rules["leverage"] >= thresholds.min_leverage].copy()
+        if rules.empty:
+            return algorithm, itemsets, rules
+
+        conviction = pd.to_numeric(rules["conviction"], errors="coerce")
+        finite_conviction = conviction.apply(lambda x: pd.notna(x) and math.isfinite(float(x)))
+        conviction_ok = (~finite_conviction) | (conviction >= thresholds.min_conviction)
+        rules = rules[conviction_ok].copy()
+        if rules.empty:
+            return algorithm, itemsets, rules
+
         rules["antecedent_items"] = rules["antecedents"].apply(lambda s: sorted(map(str, s)))
         rules["consequent_items"] = rules["consequents"].apply(lambda s: sorted(map(str, s)))
         rules["rule_key"] = rules.apply(
             lambda r: f"{'|'.join(r['antecedent_items'])}=>{'|'.join(r['consequent_items'])}", axis=1
         )
-        rules = rules.sort_values(["confidence", "lift", "support"], ascending=False).reset_index(drop=True)
+        rules = rules.sort_values(["confidence", "lift", "leverage", "support"], ascending=False).reset_index(drop=True)
         return algorithm, itemsets, rules
 
     def _target_rule_count(self, basket: pd.DataFrame) -> int:
@@ -274,9 +291,13 @@ class TeraDripMBAEngine:
         est = (n_rows ** 0.45) * (n_items ** 0.35) * (1.0 + (density * 2.2))
         return int(clamp(est, 12, 220))
 
-    def _score_rules(self, rules: pd.DataFrame, basket: pd.DataFrame, target_rules: int) -> float:
+    def _normalize_score(self, quality: float, penalty: float) -> float:
+        denom = max(quality + penalty, 1e-9)
+        return round(clamp((quality / denom) * 100.0, 0.0, 100.0), 4)
+
+    def _score_rules(self, rules: pd.DataFrame, basket: pd.DataFrame, target_rules: int) -> Tuple[float, float]:
         if rules.empty:
-            return 0.0
+            return -1.0, 0.0
         distinct_items = set()
         for row in rules.itertuples(index=False):
             distinct_items.update(row.antecedent_items)
@@ -285,13 +306,32 @@ class TeraDripMBAEngine:
         coverage = len(distinct_items) / max(1, basket.shape[1])
         mean_conf = float(rules["confidence"].mean())
         mean_lift = float(rules["lift"].mean())
+        mean_lev = float(rules["leverage"].mean())
+        finite_convictions = [
+            float(v)
+            for v in rules["conviction"].tolist()
+            if pd.notna(v) and math.isfinite(float(v))
+        ]
+        mean_conv = (sum(finite_convictions) / len(finite_convictions)) if finite_convictions else 1.0
+
         normalized_lift = clamp(mean_lift / 4.0, 0.0, 1.0)
+        normalized_leverage = clamp(mean_lev / 0.08, 0.0, 1.0)
+        normalized_conviction = clamp((mean_conv - 1.0) / 3.0, 0.0, 1.0)
 
         # Reward quality + item coverage, while discouraging too-few/too-many rules.
-        quality = (mean_conf * 0.50) + (normalized_lift * 0.30) + (coverage * 0.20)
+        quality = (
+            (mean_conf * 0.38)
+            + (normalized_lift * 0.24)
+            + (normalized_leverage * 0.20)
+            + (normalized_conviction * 0.08)
+            + (coverage * 0.10)
+        )
         count_penalty = abs(len(rules) - target_rules) / max(float(target_rules), 1.0)
         low_conf_penalty = max(0.0, 0.45 - mean_conf) * 0.55
-        return round(quality - (count_penalty * 0.22) - low_conf_penalty, 6)
+        total_penalty = (count_penalty * 0.22) + low_conf_penalty
+        raw_score = round(quality - total_penalty, 6)
+        normalized_score = self._normalize_score(quality, total_penalty)
+        return raw_score, normalized_score
 
     def _stability_report(self, new_rules: pd.DataFrame, historical_rules: List[Dict[str, Any]]) -> Dict[str, Any]:
         old_map = {row["rule_key"]: row for row in historical_rules if "rule_key" in row}
@@ -358,17 +398,29 @@ class TeraDripMBAEngine:
             min_support = clamp(base.min_support * (1.0 - (loop_id - 1) * 0.08), 0.003, 0.25)
             min_conf = clamp(base.min_confidence * (1.0 - (loop_id - 1) * 0.04), 0.20, 0.95)
             min_lift = clamp(base.min_lift * (1.0 - (loop_id - 1) * 0.03), 1.01, 3.0)
+            min_leverage = clamp(base.min_leverage * (1.0 - (loop_id - 1) * 0.06), 0.0001, 0.12)
+            min_conviction = clamp(base.min_conviction * (1.0 - (loop_id - 1) * 0.03), 1.0, 3.0)
             candidate_thresholds = [
                 Thresholds(
                     round(clamp(min_support * 1.12, 0.003, 0.25), 4),
                     round(clamp(min_conf * 1.06, 0.20, 0.95), 4),
                     round(clamp(min_lift * 1.05, 1.01, 3.0), 4),
+                    round(clamp(min_leverage * 1.08, 0.0001, 0.12), 6),
+                    round(clamp(min_conviction * 1.04, 1.0, 3.0), 4),
                 ),  # stricter
-                Thresholds(round(min_support, 4), round(min_conf, 4), round(min_lift, 4)),  # baseline
+                Thresholds(
+                    round(min_support, 4),
+                    round(min_conf, 4),
+                    round(min_lift, 4),
+                    round(min_leverage, 6),
+                    round(min_conviction, 4),
+                ),  # baseline
                 Thresholds(
                     round(clamp(min_support * 0.82, 0.003, 0.25), 4),
                     round(clamp(min_conf * 0.92, 0.20, 0.95), 4),
                     round(clamp(min_lift * 0.95, 1.01, 3.0), 4),
+                    round(clamp(min_leverage * 0.90, 0.0001, 0.12), 6),
+                    round(clamp(min_conviction * 0.96, 1.0, 3.0), 4),
                 ),  # relaxed
             ]
 
@@ -376,7 +428,7 @@ class TeraDripMBAEngine:
             candidate_scores: List[Dict[str, Any]] = []
             for idx, thresholds in enumerate(candidate_thresholds, start=1):
                 algo, itemsets, rules = self._mine_rules_once(basket, thresholds)
-                score = self._score_rules(rules, basket, target_rules=target_rules)
+                score_raw, score = self._score_rules(rules, basket, target_rules=target_rules)
                 candidate_scores.append(
                     {
                         "candidate": idx,
@@ -384,15 +436,17 @@ class TeraDripMBAEngine:
                         "algorithm": algo,
                         "rules": int(len(rules)),
                         "itemsets": int(len(itemsets)),
+                        "score_raw": score_raw,
                         "score": score,
                     }
                 )
-                if loop_best is None or score > loop_best["score"]:
+                if loop_best is None or score_raw > loop_best["score_raw"]:
                     loop_best = {
                         "algorithm": algo,
                         "thresholds": thresholds,
                         "itemsets": itemsets,
                         "rules": rules,
+                        "score_raw": score_raw,
                         "score": score,
                     }
 
@@ -406,20 +460,21 @@ class TeraDripMBAEngine:
                     "selected_algorithm": loop_best["algorithm"],
                     "selected_thresholds": loop_best["thresholds"].__dict__,
                     "selected_rules": int(len(loop_best["rules"])),
+                    "selected_score_raw": loop_best["score_raw"],
                     "selected_score": loop_best["score"],
                     "candidates": candidate_scores,
                 }
             )
 
-            if best is None or loop_best["score"] > best["score"]:
+            if best is None or loop_best["score_raw"] > best["score_raw"]:
                 best = loop_best
 
-            if previous_score is not None and abs(loop_best["score"] - previous_score) < 0.0015:
+            if previous_score is not None and abs(loop_best["score_raw"] - previous_score) < 0.0015:
                 plateau_hits += 1
             else:
                 plateau_hits = 0
 
-            previous_score = loop_best["score"]
+            previous_score = loop_best["score_raw"]
 
             # Stop early only after achieving useful rule volume.
             if plateau_hits >= 2 and int(len(best["rules"])) >= min_acceptable_rules:
@@ -433,9 +488,11 @@ class TeraDripMBAEngine:
                     round(clamp(rescue_base.min_support * (0.78 ** rescue_idx), 0.002, 0.25), 4),
                     round(clamp(rescue_base.min_confidence * (0.90 ** rescue_idx), 0.18, 0.95), 4),
                     round(clamp(rescue_base.min_lift * (0.94 ** rescue_idx), 1.01, 3.0), 4),
+                    round(clamp(rescue_base.min_leverage * (0.85 ** rescue_idx), 0.0001, 0.12), 6),
+                    round(clamp(rescue_base.min_conviction * (0.95 ** rescue_idx), 1.0, 3.0), 4),
                 )
                 algo, itemsets, rules = self._mine_rules_once(basket, rescue_thresholds)
-                score = self._score_rules(rules, basket, target_rules=target_rules)
+                score_raw, score = self._score_rules(rules, basket, target_rules=target_rules)
                 loop_trace.append(
                     {
                         "loop": f"rescue_{rescue_idx}",
@@ -443,15 +500,17 @@ class TeraDripMBAEngine:
                         "selected_algorithm": algo,
                         "selected_thresholds": rescue_thresholds.__dict__,
                         "selected_rules": int(len(rules)),
+                        "selected_score_raw": score_raw,
                         "selected_score": score,
                     }
                 )
-                if score > best["score"]:
+                if score_raw > best["score_raw"]:
                     best = {
                         "algorithm": algo,
                         "thresholds": rescue_thresholds,
                         "itemsets": itemsets,
                         "rules": rules,
+                        "score_raw": score_raw,
                         "score": score,
                     }
                 if int(len(best["rules"])) >= min_acceptable_rules:
@@ -584,6 +643,12 @@ class TeraDripMBAEngine:
                     "message": text,
                     "confidence": round(float(row.confidence), 4),
                     "lift": round(float(row.lift), 4),
+                    "leverage": round(float(row.leverage), 4),
+                    "conviction": (
+                        round(float(row.conviction), 4)
+                        if pd.notna(row.conviction) and math.isfinite(float(row.conviction))
+                        else None
+                    ),
                 }
             )
             if len(promos) >= limit:
@@ -631,6 +696,17 @@ class TeraDripMBAEngine:
         return {
             "avg_confidence": round(float(rules["confidence"].mean()), 6),
             "avg_lift": round(float(rules["lift"].mean()), 6),
+            "avg_leverage": round(float(rules["leverage"].mean()), 6),
+            "avg_conviction": round(
+                float(
+                    pd.to_numeric(rules["conviction"], errors="coerce")
+                    .replace([float("inf"), float("-inf")], pd.NA)
+                    .dropna()
+                    .mean()
+                    or 0.0
+                ),
+                6,
+            ),
             "item_coverage": round(float(coverage), 6),
         }
 
@@ -765,6 +841,7 @@ class TeraDripMBAEngine:
             metrics = {
                 "phase": phase,
                 "score": optimization["score"],
+                "score_raw": optimization["score_raw"],
                 "algorithm": algorithm,
                 "thresholds": thresholds.__dict__,
                 "basket_stats": self.basket_stats(basket),

@@ -2211,48 +2211,85 @@
             const grid = document.getElementById('iterationGrid');
             if (!wrapper || !grid) return;
 
-            // Check if result has loop_trace
-            const loopTrace = result?.loop_trace || [];
-            if (loopTrace.length === 0) {
-                wrapper.style.display = 'none';
+            const phases = Array.isArray(result?.iteration_phases) ? result.iteration_phases : [];
+            const sortedPhases = phases
+                .filter((p) => Number(p?.phase || 0) > 0)
+                .sort((a, b) => Number(a.phase || 0) - Number(b.phase || 0));
+
+            if (sortedPhases.length === 0) {
+                const loopTrace = result?.loop_trace || [];
+                if (loopTrace.length === 0) {
+                    wrapper.style.display = 'none';
+                    return;
+                }
+
+                wrapper.style.display = 'block';
+                grid.innerHTML = loopTrace.slice(0, 3).map((iter, idx) => {
+                    const loopName = iter.loop || `Iteration ${idx + 1}`;
+                    const algo = iter.selected_algorithm || 'N/A';
+                    const rules = iter.selected_rules || 0;
+                    const score = iter.selected_score ? iter.selected_score.toFixed(4) : '0.0000';
+                    const thresholds = iter.selected_thresholds || {};
+                    const minSup = thresholds.min_support ? (thresholds.min_support * 100).toFixed(2) + '%' : 'N/A';
+                    const minConf = thresholds.min_confidence ? (thresholds.min_confidence * 100).toFixed(1) + '%' : 'N/A';
+                    const minLift = thresholds.min_lift ? thresholds.min_lift.toFixed(2) : 'N/A';
+
+                    return `
+                        <div class="iteration-card">
+                            <div class="iteration-number">${loopName}</div>
+                            <div class="iteration-detail"><span class="iteration-label">Algorithm</span><span class="iteration-algo">${algo}</span></div>
+                            <div class="iteration-detail"><span class="iteration-label">Rules Generated</span><span class="iteration-value">${rules}</span></div>
+                            <div class="iteration-detail"><span class="iteration-label">Min Support</span><span class="iteration-value">${minSup}</span></div>
+                            <div class="iteration-detail"><span class="iteration-label">Min Confidence</span><span class="iteration-value">${minConf}</span></div>
+                            <div class="iteration-detail"><span class="iteration-label">Min Lift</span><span class="iteration-value">${minLift}</span></div>
+                            <div class="iteration-score">Score: ${score}</div>
+                        </div>
+                    `;
+                }).join('');
                 return;
             }
 
             wrapper.style.display = 'block';
-            grid.innerHTML = loopTrace.map((iter, idx) => {
-                const loopName = iter.loop || `Iteration ${idx + 1}`;
-                const algo = iter.selected_algorithm || 'N/A';
-                const rules = iter.selected_rules || 0;
-                const score = iter.selected_score ? iter.selected_score.toFixed(4) : '0.0000';
-                const thresholds = iter.selected_thresholds || {};
-                const minSup = thresholds.min_support ? (thresholds.min_support * 100).toFixed(2) + '%' : 'N/A';
-                const minConf = thresholds.min_confidence ? (thresholds.min_confidence * 100).toFixed(1) + '%' : 'N/A';
-                const minLift = thresholds.min_lift ? thresholds.min_lift.toFixed(2) : 'N/A';
+            grid.innerHTML = sortedPhases.map((phaseRow) => {
+                const phaseNum = Number(phaseRow.phase || 0);
+                const algo = phaseRow.algorithm || 'N/A';
+                const rules = Number(phaseRow.rule_count || 0);
+                const score = Number(phaseRow.score || 0);
+                const scoreRaw = Number(phaseRow.score_raw || 0);
+                const targetRules = Number(phaseRow.target_rule_count || 0);
+                const basketStats = phaseRow.basket_stats || {};
+                const txns = Number(basketStats.transactions || 0);
+                const thresholds = phaseRow.thresholds || {};
+
+                const minSup = Number.isFinite(Number(thresholds.min_support))
+                    ? `${(Number(thresholds.min_support) * 100).toFixed(2)}%`
+                    : 'N/A';
+                const minConf = Number.isFinite(Number(thresholds.min_confidence))
+                    ? `${(Number(thresholds.min_confidence) * 100).toFixed(1)}%`
+                    : 'N/A';
+                const minLift = Number.isFinite(Number(thresholds.min_lift))
+                    ? Number(thresholds.min_lift).toFixed(2)
+                    : 'N/A';
+                const minLeverage = Number.isFinite(Number(thresholds.min_leverage))
+                    ? Number(thresholds.min_leverage).toFixed(4)
+                    : 'N/A';
+                const minConviction = Number.isFinite(Number(thresholds.min_conviction))
+                    ? Number(thresholds.min_conviction).toFixed(2)
+                    : 'N/A';
 
                 return `
                     <div class="iteration-card">
-                        <div class="iteration-number">${loopName}</div>
-                        <div class="iteration-detail">
-                            <span class="iteration-label">Algorithm</span>
-                            <span class="iteration-algo">${algo}</span>
-                        </div>
-                        <div class="iteration-detail">
-                            <span class="iteration-label">Rules Generated</span>
-                            <span class="iteration-value">${rules}</span>
-                        </div>
-                        <div class="iteration-detail">
-                            <span class="iteration-label">Min Support</span>
-                            <span class="iteration-value">${minSup}</span>
-                        </div>
-                        <div class="iteration-detail">
-                            <span class="iteration-label">Min Confidence</span>
-                            <span class="iteration-value">${minConf}</span>
-                        </div>
-                        <div class="iteration-detail">
-                            <span class="iteration-label">Min Lift</span>
-                            <span class="iteration-value">${minLift}</span>
-                        </div>
-                        <div class="iteration-score">Score: ${score}</div>
+                        <div class="iteration-number">Iteration ${phaseNum}</div>
+                        <div class="iteration-detail"><span class="iteration-label">Data Slice Rows</span><span class="iteration-value">${txns.toLocaleString()}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Algorithm</span><span class="iteration-algo">${algo}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Rules Generated</span><span class="iteration-value">${rules.toLocaleString()}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Target Rules</span><span class="iteration-value">${targetRules.toLocaleString()}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Min Support</span><span class="iteration-value">${minSup}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Min Confidence</span><span class="iteration-value">${minConf}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Min Lift</span><span class="iteration-value">${minLift}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Min Leverage</span><span class="iteration-value">${minLeverage}</span></div>
+                        <div class="iteration-detail"><span class="iteration-label">Min Conviction</span><span class="iteration-value">${minConviction}</span></div>
+                        <div class="iteration-score">Score: ${score.toFixed(1)}/100 <span style="font-size:12px; font-weight:600; opacity:.8;">(raw ${scoreRaw.toFixed(4)})</span></div>
                     </div>
                 `;
             }).join('');
