@@ -2233,6 +2233,12 @@
                     const minSup = thresholds.min_support ? (thresholds.min_support * 100).toFixed(2) + '%' : 'N/A';
                     const minConf = thresholds.min_confidence ? (thresholds.min_confidence * 100).toFixed(1) + '%' : 'N/A';
                     const minLift = thresholds.min_lift ? thresholds.min_lift.toFixed(2) : 'N/A';
+                    const minLeverage = Number.isFinite(Number(thresholds.min_leverage))
+                        ? Number(thresholds.min_leverage).toFixed(4)
+                        : 'N/A';
+                    const minConviction = Number.isFinite(Number(thresholds.min_conviction))
+                        ? Number(thresholds.min_conviction).toFixed(2)
+                        : 'N/A';
 
                     return `
                         <div class="iteration-card">
@@ -2242,6 +2248,8 @@
                             <div class="iteration-detail"><span class="iteration-label">Min Support</span><span class="iteration-value">${minSup}</span></div>
                             <div class="iteration-detail"><span class="iteration-label">Min Confidence</span><span class="iteration-value">${minConf}</span></div>
                             <div class="iteration-detail"><span class="iteration-label">Min Lift</span><span class="iteration-value">${minLift}</span></div>
+                            <div class="iteration-detail"><span class="iteration-label">Min Leverage</span><span class="iteration-value">${minLeverage}</span></div>
+                            <div class="iteration-detail"><span class="iteration-label">Min Conviction</span><span class="iteration-value">${minConviction}</span></div>
                             <div class="iteration-score">Score: ${score}</div>
                         </div>
                     `;
