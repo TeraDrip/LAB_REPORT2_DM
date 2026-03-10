@@ -529,6 +529,12 @@ class TeraDripMBAEngine:
                     "confidence": round(float(row.confidence), 4),
                     "lift": round(float(row.lift), 4),
                     "support": round(float(row.support), 4),
+                    "leverage": round(float(row.leverage), 4),
+                    "conviction": (
+                        round(float(row.conviction), 4)
+                        if pd.notna(row.conviction) and math.isfinite(float(row.conviction))
+                        else None
+                    ),
                 }
             )
         return rows

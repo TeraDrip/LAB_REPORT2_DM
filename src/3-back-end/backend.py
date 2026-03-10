@@ -1,4 +1,4 @@
-"""
+﻿"""
 TeraDrip Salon Backend API
 Integrates the ETL pipeline with the front-end interface.
 """
@@ -1242,6 +1242,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
         "price_coverage": price_coverage,
         "governance": governance,
         "analytics_comparison": analytics_comparison,
+        "loop_trace": metrics.get("loop_trace", []),
         "logs": [
             {"text": "> Connecting to Warehouse...", "type": "info"},
             {"text": f"> Running Hybrid MBA on {source_table}...", "type": "info"},
@@ -1267,7 +1268,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
             },
             {"text": f"> Manual review flags: {len(governance.get('anomalies', []))}", "type": "warning"},
             *insight_lines,
-            {"text": "âœ“ Analysis Complete!", "type": "success"},
+            {"text": "> Analysis Complete ✅", "type": "success"},
         ],
     }
 

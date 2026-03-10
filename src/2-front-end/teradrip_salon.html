@@ -370,7 +370,7 @@
             font-weight: 600;
         }
 
-        .file-name.show { display: inline-block; margin-top: 12px; }
+        .file-name.show { display: inline-block; }
 
         /* Buttons */
         .btn {
@@ -541,11 +541,15 @@
 
         /* Recommendations */
         .event { 
-            padding: 16px 20px; 
+            padding: 20px 24px; 
             border-radius: var(--border-radius-xs); 
-            margin-bottom: 12px;
+            margin-bottom: 14px;
             border-left: 3px solid;
             transition: all 0.3s ease;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 24px;
         }
 
         .event:hover { transform: translateX(4px); }
@@ -560,14 +564,198 @@
             border-color: var(--accent-cyan);
         }
 
-        .event-title { 
-            font-size: 14px; 
-            font-weight: 600; 
-            color: var(--text-primary); 
-            margin-bottom: 4px; 
+        .event-content {
+            flex: 1;
+            min-width: 0;
         }
 
-        .event-desc { font-size: 12px; color: var(--text-muted); }
+        .event-title { 
+            font-size: 15px; 
+            font-weight: 600; 
+            color: var(--text-primary); 
+            margin-bottom: 6px; 
+        }
+
+        .event-desc { font-size: 13px; color: var(--text-muted); }
+
+        .metric-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .metric-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .metric-badge-label {
+            font-weight: 600;
+            opacity: 0.8;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .metric-badge-value {
+            font-weight: 800;
+            font-size: 13px;
+        }
+
+        .metric-badge.support {
+            background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+            color: #166534;
+            border: 1px solid #86efac;
+        }
+
+        .metric-badge.confidence {
+            background: linear-gradient(135deg, #ddd6fe, #c4b5fd);
+            color: #5b21b6;
+            border: 1px solid #a78bfa;
+        }
+
+        .metric-badge.lift {
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+            color: #92400e;
+            border: 1px solid #fbbf24;
+        }
+
+        .metric-badge.conviction {
+            background: linear-gradient(135deg, #fce7f3, #fbcfe8);
+            color: #9f1239;
+            border: 1px solid #f9a8d4;
+        }
+
+        .metric-badge.leverage {
+            background: linear-gradient(135deg, #cffafe, #a5f3fc);
+            color: #155e75;
+            border: 1px solid #67e8f9;
+        }
+
+        /* Iteration Summary Styles */
+        .iteration-summary-container {
+            background: var(--glass-bg);
+            border-radius: var(--border-radius);
+            padding: 24px;
+            margin-bottom: 24px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 4px 12px rgba(167, 139, 250, 0.08);
+        }
+
+        .iteration-summary-header {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .iteration-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+        }
+
+        .iteration-card {
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.3));
+            border-radius: var(--border-radius-sm);
+            padding: 16px 20px;
+            border: 1px solid rgba(167, 139, 250, 0.15);
+            transition: all 0.3s ease;
+        }
+
+        .iteration-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(167, 139, 250, 0.15);
+            border-color: var(--accent-primary);
+        }
+
+        .iteration-number {
+            font-size: 12px;
+            font-weight: 800;
+            color: var(--accent-primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .iteration-detail {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .iteration-label {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .iteration-value {
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .iteration-algo {
+            background: linear-gradient(135deg, #ddd6fe, #c4b5fd);
+            color: #5b21b6;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .iteration-score {
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--accent-primary);
+            margin-top: 8px;
+        }
+
+        .event-pricing {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 280px;
+            padding-left: 24px;
+            border-left: 2px solid rgba(167, 139, 250, 0.3);
+        }
+
+        .pricing-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            gap: 16px;
+        }
+
+        .pricing-label {
+            font-weight: 600;
+            color: var(--text-muted);
+            white-space: nowrap;
+            font-size: 13px;
+        }
+
+        .pricing-value {
+            font-weight: 700;
+            white-space: nowrap;
+            font-size: 14px;
+        }
+
+        .pricing-value.list { color: #065f46; font-size: 14px; }
+        .pricing-value.discount { color: #9a3412; font-size: 14px; }
+        .pricing-value.final { color: #5b21b6; font-size: 16px; font-weight: 800; }
 
         /* Timer */
         .time-tracker { text-align: center; }
@@ -839,40 +1027,37 @@
             flex-wrap: wrap;
         }
 
-        .recommendation-filter-wrap {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-muted);
-        }
-
-        .recommendation-filter-icon {
-            width: 16px;
-            height: 16px;
-            color: #0f4a43;
-            flex-shrink: 0;
-        }
-
-        .recommendation-filter-icon path {
-            stroke: currentColor;
-            stroke-width: 2.2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            fill: none;
-        }
-
-        .recommendation-filter {
+        .recommendation-tabs {
+            display: flex;
+            gap: 6px;
+            background: rgba(255, 255, 255, 0.5);
+            padding: 4px;
+            border-radius: 12px;
             border: 1px solid var(--glass-border);
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.75);
-            color: var(--text-primary);
-            padding: 8px 10px;
+        }
+
+        .recommendation-tab {
+            padding: 10px 18px;
+            border-radius: 8px;
             font-size: 13px;
             font-weight: 600;
-            outline: none;
-            min-width: 220px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: none;
+            background: transparent;
+            white-space: nowrap;
+        }
+
+        .recommendation-tab:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        .recommendation-tab.active {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: white;
+            box-shadow: 0 4px 16px var(--glow-primary);
         }
 
         .widget-title {
@@ -1042,6 +1227,137 @@
             border-top: 1px dashed rgba(167, 139, 250, 0.2);
             margin-top: 8px;
         }
+
+        /* Minimalist UI overrides */
+        :root {
+            --bg-gradient-start: #fdf2f8;
+            --bg-gradient-mid: #fce7f3;
+            --bg-gradient-end: #ede9fe;
+            --glass-bg: rgba(255, 255, 255, 0.9);
+            --glass-border: rgba(199, 210, 254, 0.45);
+            --glass-highlight: rgba(255, 255, 255, 0.85);
+            --accent-primary: #a78bfa;
+            --accent-secondary: #f0abfc;
+            --accent-tertiary: #c4b5fd;
+            --accent-cyan: #67e8f9;
+            --text-primary: #1e1b4b;
+            --text-secondary: #4c1d95;
+            --text-muted: #6b7280;
+            --glow-primary: rgba(167, 139, 250, 0.25);
+            --glow-secondary: rgba(240, 171, 252, 0.18);
+            --shadow-lg: 0 16px 36px -20px rgba(167, 139, 250, 0.35);
+            --border-radius: 16px;
+            --border-radius-sm: 12px;
+            --border-radius-xs: 10px;
+        }
+
+        body::before { display: block; }
+        .poke-ball-small { display: block; }
+
+        .app-container {
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+            box-shadow: var(--shadow-lg);
+            border-radius: 18px;
+        }
+
+        .navbar {
+            background: #ffffff;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .nav-links { background: #f8fafc; }
+
+        .nav-link.active {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: #ffffff;
+            box-shadow: 0 4px 16px var(--glow-primary);
+        }
+
+        .welcome-title {
+            background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-size: 28px;
+        }
+
+        .card {
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+            box-shadow: none;
+            border: 1px solid var(--glass-border);
+            padding: 20px;
+        }
+
+        .card:hover {
+            transform: none;
+            box-shadow: none;
+            border-color: rgba(100, 116, 139, 0.35);
+        }
+
+        .event {
+            border-left-width: 2px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+
+        .event:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px -14px rgba(167, 139, 250, 0.65);
+        }
+
+        .event.yellow,
+        .event.light {
+            background: rgba(255, 255, 255, 0.78);
+            border-color: rgba(167, 139, 250, 0.35);
+        }
+
+        .price-highlight,
+        .discount-highlight,
+        .final-price-highlight {
+            box-shadow: none;
+            border-radius: 5px;
+        }
+
+        .data-stat-card {
+            padding: 20px;
+            gap: 8px;
+        }
+
+        .data-stat-card::before { display: none; }
+
+        .data-stat-card:hover {
+            transform: none;
+            box-shadow: none;
+        }
+
+        .data-stat-value {
+            font-size: 34px;
+            background: linear-gradient(135deg, var(--text-primary), var(--accent-primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .data-stat-desc {
+            display: none;
+        }
+
+        .analytics-recommendations {
+            background: rgba(255, 255, 255, 0.55);
+            border-color: rgba(167, 139, 250, 0.3);
+        }
+
+        .analytics-reco-item {
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .analytics-reco-item:last-child { margin-bottom: 0; }
+
+        .tab-panel { animation: none; }
     </style>
 </head>
 <body>
@@ -1079,7 +1395,7 @@
 
         <div class="main-content">
             <div class="welcome-section">
-                <h1 class="welcome-title" id="pageTitle">Welcome to TeraDrip Salon</h1>
+                <h1 class="welcome-title" id="pageTitle">Dashboard</h1>
             </div>
 
             <!-- Dashboard Tab -->
@@ -1134,8 +1450,8 @@
 
                             <div class="upload-icon" style="font-size: 28px; margin-bottom: 8px;">📁</div>
 
-                            <div class="upload-text" style="font-size: 14px;">Drop your CSV file here</div>
-                            <div class="upload-hint">or click to browse local files</div>
+                            <div class="upload-text" style="font-size: 14px;">Upload CSV</div>
+                            <div class="upload-hint">Drop file or click to browse</div>
                         </div>
                         <div id="fileInfoRow" style="display: none; align-items: center; gap: 10px; margin-top: 8px;">
                             <div class="file-name show" id="fileName"></div>
@@ -1143,8 +1459,8 @@
                             <button id="clearFileWrapper" onclick="clearFile()" style="background: #fee2e2; color: #b91c1c; font-size: 12px; padding: 6px 12px; border-radius: 8px; font-weight: 700; border: none; cursor: pointer; white-space: nowrap;">✕ Clear</button>
                         </div>
                         <div class="upload-action-row">
-                            <button class="btn btn-primary" onclick="processPipeline()">🚀 Start ETL Pipeline</button>
-                            <button class="btn btn-accent" onclick="runMLLogic()">✨ Generate Recommendations</button>
+                            <button class="btn btn-primary" onclick="processPipeline()">Run ETL</button>
+                            <button class="btn btn-accent" onclick="runMLLogic()">Run ML</button>
                         </div>
                     </div>
 
@@ -1185,7 +1501,7 @@
                                 <div class="threshold-value" id="mincofValue">--</div>
                             </div>
                         </div>
-                        <div class="threshold-meta" id="thresholdMeta">Thresholds are generated when you click Generate Recommendations.</div>
+                        <div class="threshold-meta" id="thresholdMeta">Generated after running ML.</div>
                     </div>
 
                     <!-- ML Output Card -->
@@ -1212,34 +1528,27 @@
             <div id="tab-recommendation" class="tab-panel" style="display:none;">
                 <div class="card">
                     <div class="recommendation-header">
-                        <div class="card-title">📅 Recommendation Widgets</div>
-                        <label class="recommendation-filter-wrap" for="recommendationFilter">
-                            <svg class="recommendation-filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M3 5h18l-7 8v6l-4-3v-3z"></path>
-                            </svg>
-                            <span>Filter</span>
-                            <select id="recommendationFilter" class="recommendation-filter">
-                                <option value="all">All</option>
-                                <option value="top-bundles">Top Bundles</option>
-                                <option value="fbt">Frequently Bought Together</option>
-                                <option value="promo">Promo Recommendation</option>
-                                <option value="cross-sell">Cross-sell Suggestions</option>
-                            </select>
-                        </label>
+                        <div class="card-title">Recommendations</div>
+                        <div class="recommendation-tabs">
+                            <button class="recommendation-tab active" data-reco-tab="top-bundles">Top Bundles</button>
+                            <button class="recommendation-tab" data-reco-tab="fbt">FBT</button>
+                            <button class="recommendation-tab" data-reco-tab="promo">Promo</button>
+                            <button class="recommendation-tab" data-reco-tab="cross-sell">Cross-sell</button>
+                        </div>
                     </div>
-                    <div class="widget-group recommendation-section" data-filter="top-bundles">
+                    <div class="widget-group recommendation-section" data-filter="top-bundles" style="display:block;">
                         <div class="widget-title">Top Bundles</div>
                         <div class="recommendations-container" id="topBundlesContainer"></div>
                     </div>
-                    <div class="widget-group recommendation-section" data-filter="fbt">
+                    <div class="widget-group recommendation-section" data-filter="fbt" style="display:none;">
                         <div class="widget-title">Frequently Bought Together</div>
                         <div class="recommendations-container" id="fbtContainer"></div>
                     </div>
-                    <div class="widget-group recommendation-section" data-filter="promo">
+                    <div class="widget-group recommendation-section" data-filter="promo" style="display:none;">
                         <div class="widget-title">Promo Recommendation Generator</div>
                         <div class="recommendations-container" id="promoContainer"></div>
                     </div>
-                    <div class="widget-group recommendation-section" data-filter="cross-sell">
+                    <div class="widget-group recommendation-section" data-filter="cross-sell" style="display:none;">
                         <div class="widget-title">Cross-Sell Suggestions</div>
                         <div id="crossSellContainer"></div>
                     </div>
@@ -1249,18 +1558,18 @@
             <!-- Analytics Tab -->
             <div id="tab-analytics" class="tab-panel" style="display:none;">
                 <div class="card" style="padding: 24px;">
-                    <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">📈 Historical vs Latest Dataset Analysis</div>
-                    <div id="analyticsSummary" style="font-size: 14px; line-height: 1.6;">Run ETL + ML to compare the latest dataset against historical Supabase runs.</div>
+                    <div style="font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 8px;">Dataset Analysis</div>
+                    <div id="analyticsSummary" style="font-size: 14px; line-height: 1.5;">Run ETL + ML to load analytics.</div>
 
                     <div id="analyticsKpiGrid" class="analytics-kpi-grid"></div>
 
                     <div class="analytics-trend">
-                        <div class="widget-title">Rule Generation Trend Across Datasets (latest highlighted)</div>
+                        <div class="widget-title">Rule Trend</div>
                         <div id="analyticsTrendChart"></div>
                     </div>
 
                     <div class="analytics-recommendations">
-                        <div class="widget-title">Predicted Outcome and Business Recommendations</div>
+                        <div class="widget-title">Business Summary</div>
                         <div id="analyticsRecommendations" style="font-size: 13px; line-height: 1.5;">No recommendation summary yet.</div>
                     </div>
                 </div>
@@ -1268,6 +1577,15 @@
 
             <!-- Data Tab -->
             <div id="tab-data" class="tab-panel" style="display:none;">
+                <div id="iterationSummaryWrapper" class="iteration-summary-container" style="display:none;">
+                    <div class="iteration-summary-header">
+                        <span>🔄</span>
+                        <span>ML Iteration Summary</span>
+                    </div>
+                    <div id="iterationGrid" class="iteration-grid">
+                        <!-- Iteration cards will be populated here -->
+                    </div>
+                </div>
                 <div class="data-stats-grid">
                     <div class="data-stat-card">
 
@@ -1276,7 +1594,7 @@
 
                         <div class="data-stat-value">2.8K</div>
                         <div class="data-stat-label">Records</div>
-                        <div class="data-stat-desc">Total rows processed from uploaded CSV files</div>
+                        <div class="data-stat-desc">Rows processed</div>
                     </div>
                     <div class="data-stat-card">
 
@@ -1285,7 +1603,7 @@
 
                         <div class="data-stat-value">56</div>
                         <div class="data-stat-label">Transforms</div>
-                        <div class="data-stat-desc">Data transformations applied during ETL pipeline</div>
+                        <div class="data-stat-desc">Transform count</div>
                     </div>
                     <div class="data-stat-card">
 
@@ -1293,7 +1611,7 @@
 
                         <div class="data-stat-value">12</div>
                         <div class="data-stat-label">Tables</div>
-                        <div class="data-stat-desc">Database tables stored in the warehouse</div>
+                        <div class="data-stat-desc">Tables in warehouse</div>
                     </div>
                 </div>
             </div>
@@ -1311,7 +1629,7 @@
         let currentTableName = null;
         let currentUploadTimestamp = null;
 
-        const tabTitles = { dashboard: 'Welcome to TeraDrip Salon', recommendation: 'Recommendations', analytics: 'Analytics', data: 'Data Overview' };
+        const tabTitles = { dashboard: 'Dashboard', recommendation: 'Recommendations', analytics: 'Analytics', data: 'Data' };
 
         function switchTab(name) {
             document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
@@ -1323,8 +1641,8 @@
             document.getElementById('pageTitle').textContent = tabTitles[name];
 
             if (name === 'recommendation') {
-                const filterEl = document.getElementById('recommendationFilter');
-                applyRecommendationFilter(filterEl ? filterEl.value : 'all');
+                // Show first recommendation tab by default
+                switchRecommendationTab('top-bundles');
             }
             
             // Fetch data stats when switching to data tab
@@ -1333,11 +1651,20 @@
             }
         }
 
-        function applyRecommendationFilter(filterValue) {
+        function switchRecommendationTab(tabKey) {
+            // Update active tab button
+            document.querySelectorAll('.recommendation-tab').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.getAttribute('data-reco-tab') === tabKey) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            // Show corresponding section
             const sections = document.querySelectorAll('#tab-recommendation .recommendation-section');
             sections.forEach(section => {
                 const sectionKey = section.getAttribute('data-filter');
-                section.style.display = (filterValue === 'all' || sectionKey === filterValue) ? 'block' : 'none';
+                section.style.display = (sectionKey === tabKey) ? 'block' : 'none';
             });
         }
 
@@ -1422,7 +1749,7 @@
             if (!thresholds) {
                 minsupEl.textContent = '--';
                 mincofEl.textContent = '--';
-                metaEl.textContent = 'Thresholds are generated when you click Generate Recommendations.';
+                metaEl.textContent = 'Generated after running ML.';
                 return;
             }
 
@@ -1647,7 +1974,7 @@
                 ['topBundlesContainer', 'fbtContainer', 'promoContainer', 'crossSellContainer'].forEach((id) => {
                     const el = document.getElementById(id);
                     if (el) {
-                        el.innerHTML = '<div class="event light"><div class="event-desc">No recommendations available. Run ETL then retry ML.</div></div>';
+                        el.innerHTML = '<div class="event light"><div class="event-content"><div class="event-desc">No recommendations available. Run ETL then retry ML.</div></div></div>';
                     }
                 });
                 renderAnalyticsComparison(null, {});
@@ -1687,7 +2014,7 @@
             const container = document.getElementById(containerId);
             if (!container) return;
             if (!Array.isArray(rows) || rows.length === 0) {
-                container.innerHTML = '<div class="event light"><div class="event-desc">No chart data available yet.</div></div>';
+                container.innerHTML = '<div class="event light"><div class="event-content"><div class="event-desc">No chart data available yet.</div></div></div>';
                 return;
             }
 
@@ -1751,7 +2078,7 @@
             const container = document.getElementById(containerId);
             if (!container) return;
             if (!Array.isArray(trendRows) || trendRows.length === 0) {
-                container.innerHTML = '<div class="event light"><div class="event-desc">No historical trend available yet.</div></div>';
+                container.innerHTML = '<div class="event light"><div class="event-content"><div class="event-desc">No historical trend available yet.</div></div></div>';
                 return;
             }
 
@@ -1785,7 +2112,7 @@
             if (!summaryEl || !kpiGridEl || !recEl) return;
 
             if (!comparison || !comparison.latest) {
-                summaryEl.textContent = 'Run ETL + ML to compare the latest dataset against historical Supabase runs.';
+                summaryEl.textContent = 'Run ETL + ML to load analytics.';
                 kpiGridEl.innerHTML = '';
                 renderTrendLine('analyticsTrendChart', [], null);
                 recEl.innerHTML = 'No recommendation summary yet.';
@@ -1798,7 +2125,7 @@
             const historyCount = Number(comparison.historical_run_count || 0);
             const datasetName = friendlyDatasetName(latest.source_table || 'n/a');
             const runDate = formatRunDate(latest.generated_at);
-            summaryEl.textContent = `This view compares your latest run (${datasetName}, ${runDate}) against ${historyCount} previous run(s), so you can quickly see if results improved or dropped.`;
+            summaryEl.textContent = `Latest: ${datasetName} (${runDate}) | Baseline runs: ${historyCount}`;
 
             const kpis = [
                 { key: 'transactions', title: 'Transactions', format: (v) => Number(v || 0).toLocaleString() },
@@ -1813,7 +2140,7 @@
                     <div class="kpi-card">
                         <div class="kpi-title">${kpi.title}</div>
                         <div class="kpi-value">${kpi.format(latest[kpi.key])}</div>
-                        <div class="kpi-sub">Historical avg: ${kpi.format(baseline[kpi.key])}</div>
+                        <div class="kpi-sub">Baseline ${kpi.format(baseline[kpi.key])}</div>
                         <div class="kpi-delta ${deltaClass(delta)}">${signedDeltaText(delta)}</div>
                     </div>
                 `;
@@ -1824,13 +2151,37 @@
             const insights = Array.isArray(result.business_insights) ? result.business_insights : [];
             const promos = Array.isArray(result.promo_recommendations) ? result.promo_recommendations : [];
             const recommendationLines = [];
-            recommendationLines.push(`• ${plainDelta('Transactions', latest.transactions, baseline.transactions, (v) => Number(v || 0).toLocaleString())}`);
-            recommendationLines.push(`• ${plainDelta('Rules generated', latest.rule_count, baseline.rule_count, (v) => Number(v || 0).toLocaleString())}`);
-            recommendationLines.push(`• ${plainDelta('Average confidence', latest.avg_confidence, baseline.avg_confidence, (v) => `${(Number(v || 0) * 100).toFixed(1)}%`)}`);
-            if (promos.length > 0) recommendationLines.push(`• Suggested promo to try first: ${promos[0].message || 'Bundle discount on high-confidence pairs.'}`);
-            if (insights.length > 0) recommendationLines.push(...insights.slice(0, 2).map((text) => `• Insight: ${text}`));
-            if (recommendationLines.length === 0) recommendationLines.push('• No recommendation summary yet. Run ETL + ML first.');
-            recEl.innerHTML = recommendationLines.map((line) => `<div style="margin-bottom: 6px;">${line}</div>`).join('');
+            const trendMark = (latestValue, baselineValue) => {
+                const lv = Number(latestValue || 0);
+                const bv = Number(baselineValue || 0);
+                if (lv === bv) return '=';
+                return lv > bv ? '↑' : '↓';
+            };
+
+            recommendationLines.push(
+                `Txn ${trendMark(latest.transactions, baseline.transactions)} ${Number(latest.transactions || 0).toLocaleString()} vs ${Number(baseline.transactions || 0).toLocaleString()}`
+            );
+            recommendationLines.push(
+                `Rules ${trendMark(latest.rule_count, baseline.rule_count)} ${Number(latest.rule_count || 0).toLocaleString()} vs ${Number(baseline.rule_count || 0).toLocaleString()}`
+            );
+            recommendationLines.push(
+                `Conf ${trendMark(latest.avg_confidence, baseline.avg_confidence)} ${(Number(latest.avg_confidence || 0) * 100).toFixed(1)}% vs ${(Number(baseline.avg_confidence || 0) * 100).toFixed(1)}%`
+            );
+
+            if (promos.length > 0) {
+                const promoName = String(promos[0].offer_type || 'bundle_discount').replaceAll('_', ' ');
+                recommendationLines.push(`Try: ${promoName}`);
+            }
+
+            if (insights.length > 0) {
+                const compactInsight = String(insights[0]).replace(/\.$/, '');
+                recommendationLines.push(`Insight: ${compactInsight}`);
+            }
+
+            recEl.innerHTML = recommendationLines
+                .slice(0, 4)
+                .map((line) => `<div class="analytics-reco-item">${line}</div>`)
+                .join('');
         }
 
         function formatMoney(value) {
@@ -1845,6 +2196,58 @@
             return `${(num * 100).toFixed(1)}%`;
         }
 
+        function renderIterationSummary(result) {
+            const wrapper = document.getElementById('iterationSummaryWrapper');
+            const grid = document.getElementById('iterationGrid');
+            if (!wrapper || !grid) return;
+
+            // Check if result has loop_trace
+            const loopTrace = result?.loop_trace || [];
+            if (loopTrace.length === 0) {
+                wrapper.style.display = 'none';
+                return;
+            }
+
+            wrapper.style.display = 'block';
+            grid.innerHTML = loopTrace.map((iter, idx) => {
+                const loopName = iter.loop || `Iteration ${idx + 1}`;
+                const algo = iter.selected_algorithm || 'N/A';
+                const rules = iter.selected_rules || 0;
+                const score = iter.selected_score ? iter.selected_score.toFixed(4) : '0.0000';
+                const thresholds = iter.selected_thresholds || {};
+                const minSup = thresholds.min_support ? (thresholds.min_support * 100).toFixed(2) + '%' : 'N/A';
+                const minConf = thresholds.min_confidence ? (thresholds.min_confidence * 100).toFixed(1) + '%' : 'N/A';
+                const minLift = thresholds.min_lift ? thresholds.min_lift.toFixed(2) : 'N/A';
+
+                return `
+                    <div class="iteration-card">
+                        <div class="iteration-number">${loopName}</div>
+                        <div class="iteration-detail">
+                            <span class="iteration-label">Algorithm</span>
+                            <span class="iteration-algo">${algo}</span>
+                        </div>
+                        <div class="iteration-detail">
+                            <span class="iteration-label">Rules Generated</span>
+                            <span class="iteration-value">${rules}</span>
+                        </div>
+                        <div class="iteration-detail">
+                            <span class="iteration-label">Min Support</span>
+                            <span class="iteration-value">${minSup}</span>
+                        </div>
+                        <div class="iteration-detail">
+                            <span class="iteration-label">Min Confidence</span>
+                            <span class="iteration-value">${minConf}</span>
+                        </div>
+                        <div class="iteration-detail">
+                            <span class="iteration-label">Min Lift</span>
+                            <span class="iteration-value">${minLift}</span>
+                        </div>
+                        <div class="iteration-score">Score: ${score}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
         function renderMLWidgets(result) {
             const bundlesContainer = document.getElementById('topBundlesContainer');
             const fbtContainer = document.getElementById('fbtContainer');
@@ -1852,24 +2255,41 @@
             const crossSellContainer = document.getElementById('crossSellContainer');
             if (!bundlesContainer || !fbtContainer || !promoContainer || !crossSellContainer) return;
 
-            const topBundles = Array.isArray(result.top_bundles) ? result.top_bundles : [];
-            const fbt = Array.isArray(result.frequently_bought_together) ? result.frequently_bought_together : [];
-            const promos = Array.isArray(result.promo_recommendations) ? result.promo_recommendations : [];
-            const crossSell = result.cross_sell_suggestions || {};
+            // Render iteration summary
+            renderIterationSummary(result);
+
+            // Extract data from final.payload or top-level
+            const payload = result.final?.payload || result;
+            const topBundles = Array.isArray(payload.top_bundles) ? payload.top_bundles : [];
+            const fbt = Array.isArray(payload.frequently_bought_together) ? payload.frequently_bought_together : [];
+            const promos = Array.isArray(payload.promo_recommendations) ? payload.promo_recommendations : [];
+            const crossSell = payload.cross_sell_suggestions || {};
 
             const bundleCards = topBundles.slice(0, 4).map((bundle, i) => {
                 const bgClass = i === 0 ? 'yellow' : 'light';
                 const items = (bundle.items || []).slice(0, 4).join(' + ');
                 const supportPct = Math.round((bundle.support || 0) * 1000) / 10;
                 const pricing = bundle.pricing || {};
-                const pricingText = Number(pricing.subtotal || 0) > 0
-                    ? `<span class="price-highlight">List ${formatMoney(pricing.subtotal)}</span> | <span class="discount-highlight">Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span> | <span class="final-price-highlight">Final ${formatMoney(pricing.discounted_total)}</span>`
-                    : 'Price details unavailable for one or more items.';
+                const hasPricing = Number(pricing.subtotal || 0) > 0;
+                const pricingColumn = hasPricing
+                    ? `<div class="event-pricing">
+                        <div class="pricing-row"><span class="pricing-label">List</span><span class="pricing-value list">${formatMoney(pricing.subtotal)}</span></div>
+                        <div class="pricing-row"><span class="pricing-label">Discount</span><span class="pricing-value discount">${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span></div>
+                        <div class="pricing-row"><span class="pricing-label">Final</span><span class="pricing-value final">${formatMoney(pricing.discounted_total)}</span></div>
+                      </div>`
+                    : `<div class="event-pricing"><span class="pricing-label">Price N/A</span></div>`;
                 return `
                     <div class="event ${bgClass}">
-                        <div class="event-title">📦 Bundle: ${items || 'N/A'}</div>
-                        <div class="event-desc">Support ${supportPct}% • ${(bundle.explanation || 'Strong co-occurrence pattern')}</div>
-                        <div class="event-desc pricing-detail-row">${pricingText}</div>
+                        <div class="event-content">
+                            <div class="event-title">📦 Bundle: ${items || 'N/A'}</div>
+                            <div class="metric-badges">
+                                <div class="metric-badge support">
+                                    <span class="metric-badge-label">Support</span>
+                                    <span class="metric-badge-value">${supportPct}%</span>
+                                </div>
+                            </div>
+                        </div>
+                        ${pricingColumn}
                     </div>
                 `;
             }).join('');
@@ -1877,57 +2297,132 @@
             const fbtCards = fbt.slice(0, 4).map((row) => {
                 const left = (row.if_items || []).join(' + ');
                 const right = (row.then_items || []).join(' + ');
+                const supportPct = Math.round((row.support || 0) * 1000) / 10;
                 const confidencePct = Math.round((row.confidence || 0) * 1000) / 10;
+                const liftVal = (row.lift || 0).toFixed(2);
+                const conviction = row.conviction !== null && row.conviction !== undefined ? row.conviction.toFixed(2) : 'N/A';
+                const leverage = (row.leverage || 0).toFixed(4);
                 const pricing = row.pricing || {};
-                const pricingText = Number(pricing.combined_subtotal || 0) > 0
-                    ? `<span class="price-highlight">If ${formatMoney(pricing.if_subtotal)} + Then ${formatMoney(pricing.then_subtotal)} = ${formatMoney(pricing.combined_subtotal)}</span> | <span class="discount-highlight">Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span> | <span class="final-price-highlight">Final ${formatMoney(pricing.discounted_total)}</span>`
-                    : 'Price details unavailable for this FBT pair.';
+                const hasPricing = Number(pricing.combined_subtotal || 0) > 0;
+                const pricingColumn = hasPricing
+                    ? `<div class="event-pricing">
+                        <div class="pricing-row"><span class="pricing-label">Combined</span><span class="pricing-value list">${formatMoney(pricing.combined_subtotal)}</span></div>
+                        <div class="pricing-row"><span class="pricing-label">Discount</span><span class="pricing-value discount">${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span></div>
+                        <div class="pricing-row"><span class="pricing-label">Final</span><span class="pricing-value final">${formatMoney(pricing.discounted_total)}</span></div>
+                      </div>`
+                    : `<div class="event-pricing"><span class="pricing-label">Price N/A</span></div>`;
                 return `
                     <div class="event light">
-                        <div class="event-title">🛒 FBT: ${left || 'N/A'} → ${right || 'N/A'}</div>
-                        <div class="event-desc">Confidence ${confidencePct}% • Lift ${(row.lift || 0).toFixed(2)}</div>
-                        <div class="event-desc pricing-detail-row">${pricingText}</div>
+                        <div class="event-content">
+                            <div class="event-title">🛒 FBT: ${left || 'N/A'} → ${right || 'N/A'}</div>
+                            <div class="metric-badges">
+                                <div class="metric-badge support">
+                                    <span class="metric-badge-label">Support</span>
+                                    <span class="metric-badge-value">${supportPct}%</span>
+                                </div>
+                                <div class="metric-badge confidence">
+                                    <span class="metric-badge-label">Conf</span>
+                                    <span class="metric-badge-value">${confidencePct}%</span>
+                                </div>
+                                <div class="metric-badge lift">
+                                    <span class="metric-badge-label">Lift</span>
+                                    <span class="metric-badge-value">${liftVal}</span>
+                                </div>
+                                <div class="metric-badge conviction">
+                                    <span class="metric-badge-label">Conv</span>
+                                    <span class="metric-badge-value">${conviction}</span>
+                                </div>
+                                <div class="metric-badge leverage">
+                                    <span class="metric-badge-label">Lev</span>
+                                    <span class="metric-badge-value">${leverage}</span>
+                                </div>
+                            </div>
+                        </div>
+                        ${pricingColumn}
                     </div>
                 `;
             }).join('');
 
             const promoCards = promos.slice(0, 4).map((promo) => {
                 const trigger = (promo.trigger_items || []).join(', ');
+                const confidencePct = Math.round((promo.confidence || 0) * 1000) / 10;
+                const liftVal = (promo.lift || 0).toFixed(2);
                 const pricing = promo.pricing || {};
-                const pricingText = Number(pricing.subtotal || 0) > 0
-                    ? `<span class="price-highlight">Promo value: ${formatMoney(pricing.subtotal)}</span> | <span class="discount-highlight">Discount ${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span> | <span class="final-price-highlight">Customer pays ${formatMoney(pricing.discounted_total)}</span>`
-                    : 'Price details unavailable for this promo.';
+                const hasPricing = Number(pricing.subtotal || 0) > 0;
+                const pricingColumn = hasPricing
+                    ? `<div class="event-pricing">
+                        <div class="pricing-row"><span class="pricing-label">Promo Value</span><span class="pricing-value list">${formatMoney(pricing.subtotal)}</span></div>
+                        <div class="pricing-row"><span class="pricing-label">Discount</span><span class="pricing-value discount">${formatDiscountPct(pricing.discount_pct)} (${formatMoney(pricing.discount_amount)})</span></div>
+                        <div class="pricing-row"><span class="pricing-label">Customer Pays</span><span class="pricing-value final">${formatMoney(pricing.discounted_total)}</span></div>
+                      </div>`
+                    : `<div class="event-pricing"><span class="pricing-label">Price N/A</span></div>`;
                 return `
                     <div class="event light">
-                        <div class="event-title">🏷 Promo: ${(promo.offer_type || 'bundle_discount').replaceAll('_', ' ')}</div>
-                        <div class="event-desc">${promo.message || ''} | Trigger: ${trigger || 'N/A'}</div>
-                        <div class="event-desc pricing-detail-row">${pricingText}</div>
+                        <div class="event-content">
+                            <div class="event-title">🏷 Promo: ${(promo.offer_type || 'bundle_discount').replaceAll('_', ' ')}</div>
+                            <div class="event-desc">Trigger: ${trigger || 'N/A'}</div>
+                            <div class="metric-badges">
+                                <div class="metric-badge confidence">
+                                    <span class="metric-badge-label">Conf</span>
+                                    <span class="metric-badge-value">${confidencePct}%</span>
+                                </div>
+                                <div class="metric-badge lift">
+                                    <span class="metric-badge-label">Lift</span>
+                                    <span class="metric-badge-value">${liftVal}</span>
+                                </div>
+                            </div>
+                        </div>
+                        ${pricingColumn}
                     </div>
                 `;
             }).join('');
 
-            bundlesContainer.innerHTML = bundleCards || '<div class="event light"><div class="event-desc">No bundle data yet.</div></div>';
-            fbtContainer.innerHTML = fbtCards || '<div class="event light"><div class="event-desc">No FBT data yet.</div></div>';
-            promoContainer.innerHTML = promoCards || '<div class="event light"><div class="event-desc">No promo suggestions yet.</div></div>';
+            bundlesContainer.innerHTML = bundleCards || '<div class="event light"><div class="event-content"><div class="event-desc">No bundle data yet.</div></div></div>';
+            fbtContainer.innerHTML = fbtCards || '<div class="event light"><div class="event-content"><div class="event-desc">No FBT data yet.</div></div></div>';
+            promoContainer.innerHTML = promoCards || '<div class="event light"><div class="event-content"><div class="event-desc">No promo suggestions yet.</div></div></div>';
 
             const crossSellPricingRows = Array.isArray(result.cross_sell_pricing) ? result.cross_sell_pricing : [];
             if (crossSellPricingRows.length > 0) {
                 crossSellContainer.innerHTML = crossSellPricingRows.slice(0, 3).map((row) => {
                     const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
-                    const suggestionText = suggestions.slice(0, 3).map((s) => {
-                        if (!Number.isFinite(Number(s.price))) return `${s.item} (price N/A)`;
-                        return `${s.item}: <span class="price-highlight">${formatMoney(s.price)}</span> → <span class="final-price-highlight">${formatMoney(s.discounted_price)}</span> <span class="discount-highlight">(${formatDiscountPct(s.discount_pct)} off)</span>`;
-                    }).join(' | ');
                     const baseText = Number.isFinite(Number(row.base_price))
-                        ? `${row.base_item} (<span class="price-highlight">${formatMoney(row.base_price)}</span>)`
+                        ? `${row.base_item} (${formatMoney(row.base_price)})`
                         : `${row.base_item} (price N/A)`;
-                    return `<div class="event light"><div class="event-title">🔁 ${baseText}</div><div class="event-desc pricing-detail-row">${suggestionText || 'No priced suggestions available.'}</div></div>`;
+                    
+                    const suggestionsHTML = suggestions.slice(0, 3).map((s) => {
+                        if (!Number.isFinite(Number(s.price))) {
+                            return `<div class="pricing-row"><span class="pricing-label">${s.item}</span><span class="pricing-value">N/A</span></div>`;
+                        }
+                        return `<div class="pricing-row">
+                            <span class="pricing-label">${s.item}</span>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <span style="text-decoration: line-through; color: var(--text-muted); font-size: 10px;">${formatMoney(s.price)}</span>
+                                <span class="pricing-value final">${formatMoney(s.discounted_price)}</span>
+                            </div>
+                        </div>`;
+                    }).join('');
+                    
+                    return `<div class="event light">
+                        <div class="event-content">
+                            <div class="event-title">🔁 ${baseText}</div>
+                            <div class="event-desc">Cross-sell suggestions</div>
+                        </div>
+                        <div class="event-pricing">${suggestionsHTML || '<span class="pricing-label">No suggestions</span>'}</div>
+                    </div>`;
                 }).join('');
             } else {
                 const crossSellEntries = Object.entries(crossSell).slice(0, 3);
                 crossSellContainer.innerHTML = crossSellEntries.length > 0
-                    ? `<div class="event light"><div class="event-desc">${crossSellEntries.map(([k, v]) => `${k} -> ${(v || []).slice(0, 3).join(', ')}`).join(' | ')}</div></div>`
-                    : '<div class="event light"><div class="event-desc">No cross-sell map available yet.</div></div>';
+                    ? crossSellEntries.map(([base, items]) => {
+                        const itemsList = (items || []).slice(0, 3).join(', ');
+                        return `<div class="event light">
+                            <div class="event-content">
+                                <div class="event-title">🔁 ${base}</div>
+                                <div class="event-desc">Suggests: ${itemsList || 'none'}</div>
+                            </div>
+                        </div>`;
+                    }).join('')
+                    : '<div class="event light"><div class="event-content"><div class="event-desc">No cross-sell map available yet.</div></div></div>';
             }
 
             renderAnalyticsComparison(result.analytics_comparison, result);
@@ -1949,9 +2444,9 @@
                 }
                 if (statDescs.length >= 3) {
                     const tableLabel = stats.table_name || currentTableName || 'N/A';
-                    statDescs[0].textContent = `Rows currently stored in table: ${tableLabel}`;
-                    statDescs[1].textContent = `Detected columns in ${tableLabel} (from database schema)`;
-                    statDescs[2].textContent = 'Public database tables currently available in the warehouse';
+                    statDescs[0].textContent = `Rows in ${tableLabel}`;
+                    statDescs[1].textContent = `Columns in ${tableLabel}`;
+                    statDescs[2].textContent = 'Active warehouse tables';
                 }
             } catch (error) {
                 console.log('Stats fetch failed:', error);
@@ -1960,13 +2455,16 @@
 
         // Check backend health on page load
         document.addEventListener('DOMContentLoaded', async () => {
-            const recommendationFilter = document.getElementById('recommendationFilter');
-            if (recommendationFilter) {
-                recommendationFilter.addEventListener('change', (e) => {
-                    applyRecommendationFilter(e.target.value);
+            // Set up recommendation tab listeners
+            document.querySelectorAll('.recommendation-tab').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tabKey = btn.getAttribute('data-reco-tab');
+                    switchRecommendationTab(tabKey);
                 });
-                applyRecommendationFilter(recommendationFilter.value);
-            }
+            });
+            
+            // Initialize first tab as active
+            switchRecommendationTab('top-bundles');
 
             renderThresholds(null);
 
