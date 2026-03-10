@@ -154,7 +154,7 @@ Edge-case implementation references:
 
 Pipeline flow:
 
-1. Source -> 2. Extract -> 3. Transform and Validation -> 4. Supabase (PostgreSQL) -> 5. Machine Learning -> 6. Frontend Dashboard
+1. Source -> 2. Extract -> 3. Transform and Validation -> 4. Supabase (PostgreSQL) -> 5. Machine Learning -> 6. Backend API/Service -> 7. Frontend Dashboard
 
 ### 9.1 Source Layer
 
@@ -467,7 +467,42 @@ Current implementation references:
 - `src/3-back-end/backend.py`
   - API exposure and dashboard payload shaping: `run_ml_analysis_core`
 
-### 9.6 Orchestration Layer (Apache Airflow or Prefect)
+### 9.6 Backend API and Service Layer
+
+This layer is the integration hub between storage/ML and the dashboard.
+
+Core responsibilities:
+
+- receive frontend requests
+- run ETL and ML pipeline actions
+- read latest ML outputs from Supabase
+- enrich recommendations (for example item labels and pricing coverage)
+- return dashboard-ready JSON contracts
+
+Primary backend routes in current system:
+
+- `POST /api/upload`: receives CSV upload and triggers ETL flow
+- `POST /api/ml/analyze`: runs or fetches ML output and returns recommendation payload
+- `GET /api/data/stats`: returns row/table/column stats for Data tab
+- `GET /api/health`: service health check
+
+Backend I/O contracts:
+
+- request format: JSON for ML controls (`refresh`, `table_name`, `limit`) and multipart for file upload
+- response format: JSON objects with `success`, `logs`, metrics, recommendations, and diagnostics
+
+Backend error handling:
+
+- wraps ETL/ML exceptions into API-safe JSON (`success=false`, `error`)
+- includes diagnostics (`load_warning`, `load_hint`, `etl_log_tail`) when load is degraded
+- supports local fallback behavior when DB write path fails
+
+Current implementation references:
+
+- `src/3-back-end/backend.py`
+- `src/2-front-end/teradrip_salon.html` (frontend API consumption)
+
+### 9.7 Orchestration Layer (Apache Airflow or Prefect)
 
 Purpose:
 
@@ -505,7 +540,7 @@ Orchestrator health monitoring:
 - freshness checks (time since last successful run)
 - alerts via email/Slack/webhook for critical failures
 
-### 9.7 Frontend Dashboard Layer (React or Next.js)
+### 9.8 Frontend Dashboard Layer (React or Next.js)
 
 Data access patterns:
 
@@ -529,16 +564,17 @@ Frontend error handling:
 - polling fallback if websocket/subscription fails
 - stale-data indicator if freshness threshold exceeded
 
-### 9.8 End-to-End Error Handling Matrix
+### 9.9 End-to-End Error Handling Matrix
 
 - Source -> Extract: file/API read errors logged with `run_id`, retried, then failed
 - Extract -> Transform: malformed rows quarantined, good rows continue when policy allows
 - Transform -> Validation: expectation/model failures produce structured quality report
 - Validation -> Supabase: only pass/warn data loaded, fail blocks downstream ML
 - Supabase -> ML: feature schema mismatch blocks model execution
+- ML -> Backend API: incomplete output is flagged with diagnostics and governance status
 - ML -> Frontend: write-back failure prevents stale predictions from being shown as fresh
 
-### 9.9 Recommended Operational Metrics
+### 9.10 Recommended Operational Metrics
 
 - ingestion row count per run
 - validation pass rate and failed expectation counts
@@ -546,3 +582,24 @@ Frontend error handling:
 - model quality metrics (for example AUC/F1/RMSE depending on task)
 - prediction serving freshness (`now - latest_scored_at`)
 - dashboard update latency (DB write to UI render)
+
+### 9.11 Complete Runtime Sequence (Current System)
+
+This is the exact end-to-end process in the current implementation.
+
+1. User starts launcher (`src/2-front-end/teradrip_salon_gui.py`).
+2. Launcher starts Flask backend (`src/3-back-end/backend.py`) and opens dashboard page.
+3. User uploads CSV from Dashboard (`POST /api/upload`).
+4. Backend runs ETL (`src/1-etl/data_etl.py`): extract -> clean -> infer types -> load to Supabase.
+5. User runs ML (`POST /api/ml/analyze` with `refresh=true`).
+6. Backend runs ML engine (`src/3-back-end/machine-learning/teradrip_ml.py`) for 3 phases.
+7. ML writes phase outputs to Supabase table `ml_recommendations`.
+8. Backend reads latest ML result, computes analytics comparison, enriches pricing and labels.
+9. Backend returns consolidated JSON payload to frontend.
+10. Frontend renders Recommendations, Analytics, and Data iteration cards from backend response.
+
+Operational fallback behavior in the same sequence:
+
+- If direct Postgres write fails, ML attempts Supabase REST insert.
+- If both DB/REST writes fail, ML persists local JSON fallback outputs.
+- If backend is unreachable, frontend uses simulation mode for UI continuity.
