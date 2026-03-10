@@ -158,115 +158,67 @@ Pipeline flow:
 
 ### 9.1 Source Layer
 
-Supported sources:
+Supported source:
 
-- CSV files (batch uploads)
-- REST APIs (JSON payloads)
+- CSV files uploaded from the dashboard
 
 Input data formats:
 
 - CSV (UTF-8, comma-delimited)
-- JSON objects/arrays from APIs
 
-Recommended ingestion metadata per batch:
+### 9.2 Extraction Layer (Python + Pandas)
 
-- `run_id`
-- `source_name`
-- `source_type` (`csv` or `api`)
-- `extracted_at`
-- `schema_version`
-
-### 9.2 Extraction Layer (Python + Pandas + Requests)
-
-CSV extraction (Pandas):
+Current extraction behavior:
 
 - `pd.read_csv(..., low_memory=False)` to preserve consistent type behavior
-- chunked reads for larger files (`chunksize`) when needed
-- immediate normalization of null-like strings and column names
-
-API extraction (Requests):
-
-- `requests.get/post` with explicit `timeout`
-- retry with exponential backoff for `429/5xx`
-- pagination handling (`page`, `cursor`, or `next` token)
-- flatten nested JSON into tabular records before transformation
+- uploaded file is saved and then processed through ETL
+- ETL is executed from backend via subprocess call to `src/1-etl/data_etl.py`
 
 Extraction output contract:
 
-- tabular records (DataFrame/list of dict rows)
-- metadata envelope attached to every batch
+- tabular records loaded into the resolved Supabase target table
+- ETL diagnostics (`etl_log_tail`, warnings, hints) returned to API caller
 
 Extraction error handling:
 
-- network/API failures: retry N times then fail task
-- malformed CSV rows: quarantine to `bad_records` log
-- schema drift from API: record warning and continue with known fields when safe
+- ETL non-zero exit or `[ERROR]` output is captured as `load_warning`
+- backend returns actionable `load_hint` in response payload
 
 ### 9.3 Transform and Validation Layer
 
-Transform:
+Current transform and quality handling (implemented in ETL):
 
 - sanitize table/column names to safe identifiers
 - trim whitespace, normalize null-like strings (`""`, `nan`, `none`, `null`)
 - infer and cast types (boolean, integer, float, date, timestamp, text)
 - drop fully empty rows/columns and duplicates
 
-Validation option A: Great Expectations
+Validation gates currently used:
 
-- non-null checks for required columns
-- uniqueness checks for business keys
-- range checks (for example `price >= 0`)
-- allowed category checks
-- row count freshness checks to detect abnormal volume shifts
-
-Validation option B: Pydantic
-
-- strict model schemas for row-level validation
-- typed fields plus custom validators for business rules
-- explicit validation error objects for failed rows
-
-Validation result handling before load:
-
-- PASS: write to Supabase
-- WARN: write with quality warnings logged
-- FAIL: stop load and mark run failed
-
-Validation report format (JSON):
-
-```json
-{
-  "run_id": "...",
-  "suite": "customer_dataset_checks",
-  "status": "pass|warn|fail",
-  "checks": [
-    {"name": "not_null_customer_id", "success": true, "failed_count": 0}
-  ]
-}
-```
+- empty-cleaned dataset check (`No data after cleaning`)
+- schema-alignment table resolution for append vs new-table mode
+- load success/warning signals propagated to frontend
 
 ### 9.4 Supabase Storage Layer (PostgreSQL)
 
-Recommended logical zones:
+Primary tables used in current system:
 
-- `bronze_raw_ingestion`
-- `silver_cleaned_dataset`
-- `gold_feature_store`
-- `ml_recommendations` / `ml_predictions`
-- `pipeline_runs` / `data_quality_results`
+- resolved ETL upload tables (dataset-specific)
+- `ml_recommendations` (ML output table)
 
 Load pattern:
 
 - batch insert/upsert
-- idempotency via `run_id` + business key
-- transaction boundaries for consistency
+- append to matched table when schema is equivalent
+- create/use new table when schema differs
 
 Storage error handling:
 
-- unique conflicts: upsert (`ON CONFLICT`)
-- transient DB errors: retry with backoff
-- schema mismatch: fail load and alert
+- direct DB insert path preferred
+- REST fallback path used when direct DB unavailable
+- local fallback artifact used when both DB and REST paths fail
 
-### 9.5 Machine Learning Layer (Scikit-learn or XGBoost)
+### 9.5 Machine Learning Layer (Hybrid MBA Engine)
 
 This layer contains a full recommendation sub-pipeline, not just a single model call.
 
@@ -428,28 +380,6 @@ Primary API contract for frontend:
 - `POST /api/ml/analyze`
 - returns final recommendation payload, analytics comparison, iteration phase history, and logs
 
-Example response fragments:
-
-```json
-{
-  "iteration_phases": [
-    {
-      "phase": 1,
-      "algorithm": "fpgrowth",
-      "score": 62.4,
-      "score_raw": -0.1523,
-      "thresholds": {
-        "min_support": 0.129,
-        "min_confidence": 0.489,
-        "min_lift": 1.17,
-        "min_leverage": 0.0086,
-        "min_conviction": 1.15
-      }
-    }
-  ]
-}
-```
-
 ML error handling:
 
 - missing/invalid input features: fail fast with diagnostics
@@ -502,43 +432,16 @@ Current implementation references:
 - `src/3-back-end/backend.py`
 - `src/2-front-end/teradrip_salon.html` (frontend API consumption)
 
-### 9.7 Orchestration Layer (Apache Airflow or Prefect)
+### 9.7 Execution and Runtime Orchestration (Current)
 
-Purpose:
+Current orchestration is implemented directly in Python services (no Airflow/Prefect in this repository).
 
-- manage dependencies, retries, schedules, and observability across the full pipeline
+Runtime orchestration components:
 
-Reference task graph:
-
-1. `extract_csv`
-2. `extract_api`
-3. `transform_data`
-4. `validate_data_quality`
-5. `load_supabase`
-6. `build_features`
-7. `train_or_score_model`
-8. `write_predictions`
-9. `publish_dashboard_updates`
-
-Dependency model:
-
-- extraction tasks can run in parallel
-- validation waits for all extractions
-- load waits for successful validation
-- ML waits for successful load/feature build
-
-Scheduling and retries:
-
-- cron schedule (hourly/daily) plus manual triggers
-- per-task retry policies (attempts, delay, backoff)
-- timeout and SLA thresholds for long-running tasks
-
-Orchestrator health monitoring:
-
-- task state (`queued`, `running`, `success`, `failed`, `retry`)
-- run duration, retry count, and failure reason
-- freshness checks (time since last successful run)
-- alerts via email/Slack/webhook for critical failures
+- launcher script starts backend and opens dashboard
+- backend orchestrates upload ETL and ML analysis endpoints
+- runtime state file tracks progress and supports resume behavior
+- ETL is invoked via subprocess from backend
 
 ### 9.8 Frontend Dashboard Layer (Current: Vanilla HTML/CSS/JS)
 
@@ -548,20 +451,10 @@ Current implementation in this repository:
 - backend serves data to frontend via Flask API endpoints
 - launcher script `src/2-front-end/teradrip_salon_gui.py` starts backend and opens the dashboard
 
-Optional future alternatives (not currently used in this repo):
-
-- React
-- Next.js
-
 Data access patterns:
 
-- REST APIs for historical and aggregate queries
-- realtime updates from Supabase via Webhooks or Realtime subscriptions
-
-Realtime architecture options:
-
-- Supabase Realtime channel subscription on `INSERT/UPDATE`
-- database webhook -> backend endpoint -> websocket/SSE push to frontend
+- REST API calls to backend endpoints
+- backend returns dashboard-ready recommendation and analytics payloads
 
 Frontend payload patterns:
 
@@ -577,9 +470,9 @@ Frontend error handling:
 
 ### 9.9 End-to-End Error Handling Matrix
 
-- Source -> Extract: file/API read errors logged with `run_id`, retried, then failed
-- Extract -> Transform: malformed rows quarantined, good rows continue when policy allows
-- Transform -> Validation: expectation/model failures produce structured quality report
+- Source -> Extract: CSV read or parse failures captured in backend response
+- Extract -> Transform: ETL diagnostics surfaced through `etl_log_tail`
+- Transform -> Validation: empty/invalid cleaned dataset blocks load
 - Validation -> Supabase: only pass/warn data loaded, fail blocks downstream ML
 - Supabase -> ML: feature schema mismatch blocks model execution
 - ML -> Backend API: incomplete output is flagged with diagnostics and governance status
@@ -588,9 +481,8 @@ Frontend error handling:
 ### 9.10 Recommended Operational Metrics
 
 - ingestion row count per run
-- validation pass rate and failed expectation counts
 - Supabase load latency and error rate
-- model quality metrics (for example AUC/F1/RMSE depending on task)
+- model quality metrics from MBA outputs (rule count, score, confidence/lift/leverage/conviction trends)
 - prediction serving freshness (`now - latest_scored_at`)
 - dashboard update latency (DB write to UI render)
 
