@@ -540,7 +540,18 @@ Orchestrator health monitoring:
 - freshness checks (time since last successful run)
 - alerts via email/Slack/webhook for critical failures
 
-### 9.8 Frontend Dashboard Layer (React or Next.js)
+### 9.8 Frontend Dashboard Layer (Current: Vanilla HTML/CSS/JS)
+
+Current implementation in this repository:
+
+- frontend is plain HTML/CSS/JavaScript (`src/2-front-end/teradrip_salon.html` + `src/2-front-end/styles.css`)
+- backend serves data to frontend via Flask API endpoints
+- launcher script `src/2-front-end/teradrip_salon_gui.py` starts backend and opens the dashboard
+
+Optional future alternatives (not currently used in this repo):
+
+- React
+- Next.js
 
 Data access patterns:
 
