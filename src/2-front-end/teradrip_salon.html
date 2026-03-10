@@ -913,13 +913,23 @@
             align-items: stretch;
         }
 
-        .upload-card { grid-area: upload; }
-        .time-card { grid-area: time; }
-        .threshold-card { grid-area: threshold; }
+        .upload-card { 
+            grid-area: upload; 
+            min-height: 100px;
+        }
+        .time-card { 
+            grid-area: time; 
+            min-height: 100px;
+        }
+        .threshold-card { 
+            grid-area: threshold; 
+            min-height: 100px;
+        }
         .ml-output-card {
             grid-area: ml;
             display: flex;
             flex-direction: column;
+            min-height: 100px;
         }
 
         .threshold-grid {
@@ -959,7 +969,7 @@
 
         .ml-output-card .console {
             flex: 1;
-            min-height: 280px;
+            min-height: 100px;
             max-height: none;
         }
 
@@ -1577,7 +1587,7 @@
 
             <!-- Data Tab -->
             <div id="tab-data" class="tab-panel" style="display:none;">
-                <div id="iterationSummaryWrapper" class="iteration-summary-container" style="display:none;">
+                <div id="iterationSummaryWrapper" class="iteration-summary-container">
                     <div class="iteration-summary-header">
                         <span>🔄</span>
                         <span>ML Iteration Summary</span>
