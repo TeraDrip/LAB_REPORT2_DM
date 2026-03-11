@@ -2355,7 +2355,10 @@
                 const supportPct = Math.round((row.support || 0) * 1000) / 10;
                 const confidencePct = Math.round((row.confidence || 0) * 1000) / 10;
                 const liftVal = (row.lift || 0).toFixed(2);
-                const conviction = row.conviction !== null && row.conviction !== undefined ? row.conviction.toFixed(2) : 'N/A';
+                const rawConviction = Number(row.conviction);
+                const conviction = Number.isFinite(rawConviction)
+                    ? rawConviction.toFixed(2)
+                    : (Number(row.confidence) >= 0.9999 ? '∞' : 'N/A');
                 const leverage = (row.leverage || 0).toFixed(4);
                 const pricing = row.pricing || {};
                 const hasPricing = Number(pricing.combined_subtotal || 0) > 0;
