@@ -1013,6 +1013,30 @@ def process_saved_upload(saved_file: Path, safe_name: str) -> Dict[str, Any]:
         pipeline_status["error"] = (etl_log_tail[-1] if etl_log_tail else f"ETL exited with code {rc}")
         print(f"[WARN] {load_warning}")
         print(f"[HINT] {load_hint}")
+
+        # Attempt REST fallback via supabase-py (works when table already exists in Supabase)
+        try:
+            supabase_client = get_supabase()
+            records = records_from_dataframe(cleaned_df)
+            batch_size = 500
+            for i in range(0, len(records), batch_size):
+                batch = records[i:i + batch_size]
+                supabase_client.table(table_name).insert(batch).execute()
+            # Fallback succeeded — clear the error state
+            load_warning = None
+            load_hint = None
+            pipeline_status["message"] = f"Loaded {len(cleaned_df)} records to {table_name} (REST fallback)"
+            pipeline_status["error"] = None
+            print(f"[OK] REST fallback upload: {len(cleaned_df)} rows -> {table_name}")
+        except Exception as fallback_exc:
+            print(f"[WARN] REST fallback also failed: {fallback_exc}")
+            fallback_hint = diagnose_load_issue(str(fallback_exc))
+            if not fallback_hint:
+                fallback_hint = (
+                    f"Table '{table_name}' may not exist in Supabase. "
+                    "Create it in the Supabase Dashboard, or set a working SUPABASE_DB_URL in .env."
+                )
+            load_hint = load_hint or fallback_hint
     else:
         if append_mode:
             pipeline_status["message"] = f"Appended {len(cleaned_df)} records to {table_name}"
@@ -1054,7 +1078,9 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
     global pipeline_status, latest_loaded_table
 
     requested_table = payload.get("table_name")
-    source_table = latest_loaded_table or requested_table or "teradrip_datasets_hairstylist_datasets"
+    source_table = latest_loaded_table or requested_table
+    if not source_table:
+        raise ValueError("No ETL-loaded dataset found. Run ETL first, then run ML.")
     output_table = payload.get("output_table", "ml_recommendations")
     limit = payload.get("limit")
     refresh = bool(payload.get("refresh", True))
@@ -1110,6 +1136,7 @@ def run_ml_analysis_core(payload: Dict[str, Any]) -> Dict[str, Any]:
     historical_rows = historical_response.data or []
     analytics_comparison = build_analytics_comparison(final_record, historical_rows)
 
+    #ITERATION 
     iteration_phases = []
     for phase_row in phase_records:
         metrics_row = parse_json_field(phase_row.get("metrics"))

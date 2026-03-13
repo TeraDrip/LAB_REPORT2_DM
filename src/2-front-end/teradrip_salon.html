@@ -1638,6 +1638,7 @@
         let timeInterval = null;
         let currentTableName = null;
         let currentUploadTimestamp = null;
+        let etlCompletedForCurrentFile = false;
 
         const tabTitles = { dashboard: 'Dashboard', recommendation: 'Recommendations', analytics: 'Analytics', data: 'Data' };
 
@@ -1681,6 +1682,9 @@
         document.getElementById('csvFile').addEventListener('change', function(e) {
             if (e.target.files.length > 0) {
                 selectedFile = e.target.files[0];
+                etlCompletedForCurrentFile = false;
+                currentTableName = null;
+                currentUploadTimestamp = null;
 
                 document.getElementById('fileName').textContent = '📎 ' + selectedFile.name;
 
@@ -1693,6 +1697,9 @@
 
         function clearFile() {
             selectedFile = null;
+            etlCompletedForCurrentFile = false;
+            currentTableName = null;
+            currentUploadTimestamp = null;
             document.getElementById('csvFile').value = '';
             document.getElementById('fileName').textContent = '';
             document.getElementById('uploadZone').classList.remove('has-file');
@@ -1709,6 +1716,9 @@
             const files = e.dataTransfer.files;
             if (files.length > 0 && files[0].name.endsWith('.csv')) {
                 selectedFile = files[0];
+                etlCompletedForCurrentFile = false;
+                currentTableName = null;
+                currentUploadTimestamp = null;
 
                 document.getElementById('fileName').textContent = '📎 ' + selectedFile.name;
 
@@ -1822,6 +1832,7 @@
                 if (response.ok && result.success) {
                     currentTableName = result.latest_loaded_table || result.table_name;
                     currentUploadTimestamp = (result.status && result.status.end_time) || new Date().toISOString();
+                    etlCompletedForCurrentFile = !result.load_warning;
                     const tableResolution = result.table_resolution || {};
                     const appendMode = tableResolution.mode === 'append_existing';
 
@@ -1918,6 +1929,12 @@
         async function runMLLogic() {
             const consoleEl = document.getElementById('console');
             consoleEl.innerHTML = '';
+
+            if (!etlCompletedForCurrentFile || !currentTableName) {
+                addConsoleLine(consoleEl, '> ML blocked: Run ETL first to upload/load this CSV into Supabase.', 'warning');
+                renderThresholds(null);
+                return;
+            }
             
             const segments = ['seg1', 'seg2', 'seg3', 'seg4'];
             segments.forEach(s => document.getElementById(s).classList.remove('filled'));

@@ -598,6 +598,7 @@ class TeraDripMBAEngine:
             )
         return rows
 
+    #recommendations tab
     def _cross_sell_map(self, rules: pd.DataFrame, max_per_item: int = 5) -> Dict[str, List[str]]:
         mapping: Dict[str, List[Tuple[str, float]]] = {}
         singleton = rules[rules["antecedent_items"].apply(lambda x: len(x) == 1)]
@@ -710,6 +711,7 @@ class TeraDripMBAEngine:
             "item_coverage": round(float(coverage), 6),
         }
 
+#analytics tab
     def _latest_historical_rules(self) -> List[Dict[str, Any]]:
         try:
             rows = select_table(self.output_table)
@@ -735,6 +737,7 @@ class TeraDripMBAEngine:
         rules = payload.get("rules", [])
         return rules if isinstance(rules, list) else []
 
+    #data tab
     def _ensure_output_table(self) -> None:
         db_url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
         if not db_url or psycopg is None:
